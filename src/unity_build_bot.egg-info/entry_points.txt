@@ -1,0 +1,2 @@
+[console_scripts]
+unity-build-bot = unity_build_bot.cli:main

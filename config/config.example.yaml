@@ -1,0 +1,43 @@
+# Copy to config.yaml and fill in real values. config.yaml is gitignored.
+# Secrets (passwords/tokens) are NOT stored here — see secrets.example.yaml
+# and the ${ENV_VAR} placeholders below, which are resolved from the
+# environment (or from secrets.yaml) at load time.
+
+git:
+  repo_url: "git@github.com:youraccount/your-unity-project.git"
+  branch: "main"
+  workdir: "./workspace/repo"          # local clone used by the bot
+  # Auth: prefer an SSH deploy key (read-only) already loaded in ssh-agent,
+  # or set auth_token_env to the name of an env var holding a GitHub PAT
+  # for HTTPS auth. Do not use username/password — GitHub no longer
+  # supports it.
+  auth_token_env: "GIT_TOKEN"          # optional, only for HTTPS remotes
+
+unity:
+  executable_path: "/Applications/Unity/Hub/Editor/2022.3.40f1/Unity.app/Contents/MacOS/Unity"
+  project_subpath: "."                 # Unity project folder relative to workdir
+  build_target: "StandaloneOSX"        # StandaloneWindows64 | StandaloneOSX | StandaloneLinux64
+  build_method: "BuildScript.PerformBuild"
+  output_subdir: "workspace/build"     # relative to this tool's project root
+  extra_args: []                       # e.g. ["-nographics"]
+
+versioning:
+  version_file: "version.txt"          # relative to repo workdir root
+  auto_increment: true
+  bump_part: "patch"                   # patch | minor | major
+
+steam:
+  steamcmd_path: "/usr/local/bin/steamcmd"   # local steamcmd install
+  config_vdf_path: "~/Steam/config/config.vdf"  # cached login session (see steam-deploy/README.md)
+  username: "your-steam-builder-account"
+  app_id: "123456"
+  depot_id: "123457"
+  set_live_branch: ""                  # leave empty to upload without setting a branch live
+  build_description: ""                # empty = auto timestamp
+
+logging:
+  log_dir: "~/.unity-build-bot/logs"   # kept outside any git repo on purpose
+  level: "INFO"
+
+state:
+  state_file: "~/.unity-build-bot/state.json"

@@ -1,0 +1,26 @@
+# Local configuration and secrets
+/config/config.yaml
+/config/secrets.yaml
+/.env
+/.env.*
+!/.env.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+**/id_rsa
+**/id_ed25519
+**/id_ecdsa
+**/id_dsa
+
+# Local runtime data and build output
+/.unity-build-bot/
+/workspace/
+/build/
+/dist/
+__pycache__/
+*.py[cod]
