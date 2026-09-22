@@ -41,6 +41,30 @@ scripts/
     - Windows: `powershell scripts/schedule_windows_task.ps1`
     - macOS: `./scripts/schedule_macos_launchd.sh "$(pwd)" 300`
 
+### Test without installing the bot
+
+From the repository root, set `PYTHONPATH` to the `src` directory and invoke
+the module directly. This requires Python and the runtime dependency
+`PyYAML`, but does not require installing the bot package.
+
+On macOS or Linux:
+
+```bash
+export PYTHONPATH="$PWD/src"
+python3 -m unity_build_bot status --config config/config.yaml
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+py -m unity_build_bot status --config config/config.yaml
+```
+
+The `status` command safely checks that the source tree and configuration are
+usable. To run the actual job once, replace `status` with `run`; this can pull
+the Unity project, build it, and upload it to Steam.
+
 ## Notes / design decisions
 
 - **No secrets in config.yaml.** `config.yaml` and `secrets.yaml` are gitignored; use `${ENV_VAR}` placeholders or the OS keychain for anything sensitive.
