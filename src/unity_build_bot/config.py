@@ -39,6 +39,7 @@ class UnityConfig:
     build_target: str
     build_method: str
     output_subdir: Path
+    build_name: str = "Game"
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -116,6 +117,7 @@ def load_config(path: str | Path) -> Config:
             build_target=unity_raw["build_target"],
             build_method=unity_raw["build_method"],
             output_subdir=_expand_path(unity_raw["output_subdir"]),
+            build_name=unity_raw.get("build_name", "Game"),
             extra_args=unity_raw.get("extra_args", []),
         ),
         versioning=VersioningConfig(

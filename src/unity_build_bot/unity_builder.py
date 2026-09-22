@@ -26,6 +26,7 @@ def build(unity_cfg: UnityConfig, repo_workdir: Path, version: str) -> None:
         "-buildTarget", unity_cfg.build_target,
         "-customBuildOutput", str(output_dir),
         "-customBuildVersion", version,
+        "-customBuildName", unity_cfg.build_name,
         "-logFile", str(editor_log),
         *unity_cfg.extra_args,
     ]

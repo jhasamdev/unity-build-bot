@@ -12,6 +12,7 @@ public static class BuildScript
         string outputDir = GetArg("-customBuildOutput");
         string version = GetArg("-customBuildVersion");
         string buildTargetArg = GetArg("-buildTarget");
+        string buildName = GetArg("-customBuildName") ?? "Game";
 
         if (string.IsNullOrEmpty(outputDir))
             throw new Exception("Missing -customBuildOutput argument");
@@ -23,7 +24,7 @@ public static class BuildScript
             ? EditorUserBuildSettings.activeBuildTarget
             : (BuildTarget)Enum.Parse(typeof(BuildTarget), buildTargetArg);
 
-        string locationPathName = GetOutputPath(target, outputDir);
+        string locationPathName = GetOutputPath(target, outputDir, buildName);
 
         string[] scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
@@ -49,17 +50,17 @@ public static class BuildScript
         }
     }
 
-    private static string GetOutputPath(BuildTarget target, string outputDir)
+    private static string GetOutputPath(BuildTarget target, string outputDir, string buildName)
     {
         switch (target)
         {
             case BuildTarget.StandaloneWindows64:
             case BuildTarget.StandaloneWindows:
-                return System.IO.Path.Combine(outputDir, "Game.exe");
+                return System.IO.Path.Combine(outputDir, buildName + ".exe");
             case BuildTarget.StandaloneOSX:
-                return System.IO.Path.Combine(outputDir, "Game.app");
+                return System.IO.Path.Combine(outputDir, buildName + ".app");
             default:
-                return System.IO.Path.Combine(outputDir, "Game");
+                return System.IO.Path.Combine(outputDir, buildName);
         }
     }
 

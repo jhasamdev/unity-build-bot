@@ -19,6 +19,7 @@ unity:
   build_target: "StandaloneOSX"        # StandaloneWindows64 | StandaloneOSX | StandaloneLinux64
   build_method: "BuildScript.PerformBuild"
   output_subdir: "workspace/build"     # relative to this tool's project root
+  build_name: "Game"                   # output filename, without target-specific extension
   extra_args: []                       # e.g. ["-nographics"]
 
 versioning:
