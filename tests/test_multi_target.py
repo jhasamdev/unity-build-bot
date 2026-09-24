@@ -49,6 +49,7 @@ class MultiTargetConfigTests(TestCase):
         self.assertEqual("StandaloneOSX", config.unity.builds[0].build_target)
         self.assertEqual("LegacyGame", config.unity.builds[0].build_name)
         self.assertEqual({"default": "101"}, config.steam.depots)
+        self.assertFalse(config.logging.show_activity_window)
 
     def test_multi_target_config_supports_enabled_selection(self):
         data = _config_data()
@@ -117,7 +118,11 @@ class MultiTargetRunTests(TestCase):
             unity=SimpleNamespace(builds=[macos, windows]),
             steam=Mock(),
             versioning=SimpleNamespace(version_file="version.txt", auto_increment=False),
-            logging=SimpleNamespace(log_dir=Path("logs"), level="INFO"),
+            logging=SimpleNamespace(
+                log_dir=Path("logs"),
+                level="INFO",
+                show_activity_window=False,
+            ),
             state=SimpleNamespace(state_file=Path("state.json")),
         )
         state = SimpleNamespace(

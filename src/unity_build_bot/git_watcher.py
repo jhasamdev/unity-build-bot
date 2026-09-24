@@ -3,18 +3,16 @@ from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 
 from unity_build_bot.config import GitConfig
+from unity_build_bot.process_runner import run_streaming
 
 logger = logging.getLogger("unity_build_bot")
 
 
-def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
-    print(f"\n[EJECUTANDO COMANDO]: {' '.join(cmd)} (en directorio: {cwd or 'actual'})\n")
-    logger.debug("Running: %s (cwd=%s)", " ".join(cmd), cwd)
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def _run(cmd: list[str], cwd: Path | None = None):
+    return run_streaming(cmd, cwd=cwd)
 
 
 def remote_head_sha(git_cfg: GitConfig) -> str:
@@ -51,7 +49,10 @@ def sync_workdir(git_cfg: GitConfig) -> None:
             workdir.unlink()
         workdir.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Cloning %s into %s", git_cfg.repo_url, workdir)
-        result = _run(["git", "clone", "--branch", git_cfg.branch, git_cfg.repo_url, str(workdir)])
+        result = _run([
+            "git", "clone", "--progress", "--branch", git_cfg.branch,
+            git_cfg.repo_url, str(workdir),
+        ])
         if result.returncode != 0:
             raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
         return

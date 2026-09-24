@@ -17,7 +17,11 @@ from unity_build_bot.state import State
 
 def run(config_path: str) -> int:
     cfg = load_config(config_path)
-    logger = setup_logging(cfg.logging.log_dir, cfg.logging.level)
+    logger = setup_logging(
+        cfg.logging.log_dir,
+        cfg.logging.level,
+        cfg.logging.show_activity_window,
+    )
     state = State.load(cfg.state.state_file)
 
     try:

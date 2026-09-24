@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
 
 from unity_build_bot.config import UnityBuildConfig, UnityConfig
+from unity_build_bot.process_runner import run_streaming
 
 logger = logging.getLogger("unity_build_bot")
 
@@ -32,7 +32,7 @@ def build(
         "-customBuildOutput", str(output_dir),
         "-customBuildVersion", version,
         "-customBuildName", build_cfg.build_name,
-        "-logFile", str(editor_log),
+        "-logFile", "-",
         *unity_cfg.extra_args,
     ]
 
@@ -43,7 +43,7 @@ def build(
         version,
     )
     logger.debug("Unity command: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_streaming(cmd, output_file=editor_log)
 
     if result.returncode != 0:
         tail = ""

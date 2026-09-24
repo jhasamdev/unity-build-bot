@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from unity_build_bot.config import SteamConfig
+from unity_build_bot.process_runner import run_streaming
 
 logger = logging.getLogger("unity_build_bot")
 
@@ -80,8 +80,7 @@ def upload(
         steam_cfg.set_live_branch or "<none>",
     )
     logger.debug("steamcmd command: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    steamcmd_log.write_text(result.stdout + "\n" + result.stderr)
+    result = run_streaming(cmd, output_file=steamcmd_log)
 
     # steamcmd can exit 0 even on a failed login/upload; also check its own output.
     if result.returncode != 0 or "Success!" not in result.stdout:

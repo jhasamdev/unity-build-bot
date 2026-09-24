@@ -100,6 +100,24 @@ The `status` command safely checks that the source tree and configuration are
 usable. To run the actual job once, replace `status` with `run`; this can pull
 the Unity project, build it, and upload it to Steam.
 
+### Live activity window
+
+Enable the optional terminal window in `config.yaml`:
+
+```yaml
+logging:
+  show_activity_window: true
+```
+
+The window displays Git cloning and synchronization, Unity build output,
+SteamCMD upload output, and the bot's status messages in real time. It closes
+when the bot process finishes. The normal daily log remains available under
+`logging.log_dir` whether or not the window is enabled.
+
+The window requires an active logged-in desktop session. Scheduled jobs that
+run while the user is logged out cannot display UI, but they continue writing
+to the log file normally.
+
 ## Notes / design decisions
 
 - **No secrets in config.yaml.** `config.yaml` and `secrets.yaml` are gitignored; use `${ENV_VAR}` placeholders or the OS keychain for anything sensitive.

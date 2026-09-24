@@ -23,7 +23,8 @@ class SyncWorkdirTests(TestCase):
 
             self.assertFalse(stale_file.exists())
             run_mock.assert_called_once_with([
-                "git", "clone", "--branch", "main", "git@example/repo.git", str(workdir)
+                "git", "clone", "--progress", "--branch", "main",
+                "git@example/repo.git", str(workdir),
             ])
 
     @patch("unity_build_bot.git_watcher._run")

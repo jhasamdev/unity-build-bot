@@ -49,6 +49,7 @@ steam:
 logging:
   log_dir: "~/.unity-build-bot/logs"   # kept outside any git repo on purpose
   level: "INFO"
+  show_activity_window: false          # open a live terminal window on macOS or Windows
 
 state:
   state_file: "~/.unity-build-bot/state.json"

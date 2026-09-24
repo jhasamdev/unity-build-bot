@@ -72,6 +72,7 @@ class SteamConfig:
 class LoggingConfig:
     log_dir: Path
     level: str
+    show_activity_window: bool = False
 
 
 @dataclass
@@ -164,6 +165,9 @@ def load_config(path: str | Path) -> Config:
     state_raw = raw.get("state", {})
 
     builds = _load_builds(unity_raw)
+    show_activity_window = logging_raw.get("show_activity_window", False)
+    if not isinstance(show_activity_window, bool):
+        raise ValueError("logging.show_activity_window must be true or false")
 
     return Config(
         git=GitConfig(
@@ -200,6 +204,7 @@ def load_config(path: str | Path) -> Config:
         logging=LoggingConfig(
             log_dir=_expand_path(logging_raw.get("log_dir", "~/.unity-build-bot/logs")),
             level=logging_raw.get("level", "INFO"),
+            show_activity_window=show_activity_window,
         ),
         state=StateConfig(
             state_file=_expand_path(state_raw.get("state_file", "~/.unity-build-bot/state.json")),
