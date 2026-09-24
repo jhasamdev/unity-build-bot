@@ -33,13 +33,20 @@ class GitConfig:
 
 
 @dataclass
+class UnityBuildConfig:
+    id: str
+    build_target: str
+    output_subdir: Path
+    build_name: str = "Game"
+    enabled: bool = True
+
+
+@dataclass
 class UnityConfig:
     executable_path: Path
     project_subpath: str
-    build_target: str
     build_method: str
-    output_subdir: Path
-    build_name: str = "Game"
+    builds: list[UnityBuildConfig]
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -56,7 +63,7 @@ class SteamConfig:
     config_vdf_path: Path
     username: str
     app_id: str
-    depot_id: str
+    depots: dict[str, str]
     set_live_branch: str
     build_description: str
 
@@ -86,6 +93,58 @@ def _expand_path(p: str) -> Path:
     return Path(os.path.expanduser(os.path.expandvars(p))).resolve()
 
 
+def _load_builds(unity_raw: dict[str, Any]) -> list[UnityBuildConfig]:
+    builds_raw = unity_raw.get("builds")
+    if builds_raw is None:
+        builds_raw = [{
+            "id": "default",
+            "build_target": unity_raw["build_target"],
+            "output_subdir": unity_raw["output_subdir"],
+            "build_name": unity_raw.get("build_name", "Game"),
+        }]
+    if not builds_raw:
+        raise ValueError("unity.builds must contain at least one build")
+
+    builds = []
+    for build_raw in builds_raw:
+        enabled = build_raw.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("unity.builds enabled values must be true or false")
+        builds.append(UnityBuildConfig(
+            id=str(build_raw["id"]),
+            build_target=build_raw["build_target"],
+            output_subdir=_expand_path(build_raw["output_subdir"]),
+            build_name=build_raw.get("build_name", "Game"),
+            enabled=enabled,
+        ))
+    build_ids = [build.id for build in builds]
+    if len(build_ids) != len(set(build_ids)):
+        raise ValueError("unity.builds IDs must be unique")
+    if not any(build.enabled for build in builds):
+        raise ValueError("unity.builds must contain at least one enabled build")
+    return builds
+
+
+def _load_depots(
+    steam_raw: dict[str, Any],
+    build_ids: set[str],
+    enabled_build_ids: set[str],
+) -> dict[str, str]:
+    depots_raw = steam_raw.get("depots")
+    depots = (
+        {str(build_id): str(depot_id) for build_id, depot_id in depots_raw.items()}
+        if depots_raw is not None
+        else {"default": str(steam_raw["depot_id"])}
+    )
+    unknown_ids = set(depots) - build_ids
+    if unknown_ids:
+        raise ValueError("steam.depots contains IDs not defined in unity.builds")
+    missing_ids = enabled_build_ids - set(depots)
+    if missing_ids:
+        raise ValueError("steam.depots must contain every enabled unity.builds ID")
+    return depots
+
+
 def load_config(path: str | Path) -> Config:
     path = Path(path)
     if not path.is_file():
@@ -104,6 +163,8 @@ def load_config(path: str | Path) -> Config:
     logging_raw = raw.get("logging", {})
     state_raw = raw.get("state", {})
 
+    builds = _load_builds(unity_raw)
+
     return Config(
         git=GitConfig(
             repo_url=git_raw["repo_url"],
@@ -114,10 +175,8 @@ def load_config(path: str | Path) -> Config:
         unity=UnityConfig(
             executable_path=_expand_path(unity_raw["executable_path"]),
             project_subpath=unity_raw.get("project_subpath", "."),
-            build_target=unity_raw["build_target"],
             build_method=unity_raw["build_method"],
-            output_subdir=_expand_path(unity_raw["output_subdir"]),
-            build_name=unity_raw.get("build_name", "Game"),
+            builds=builds,
             extra_args=unity_raw.get("extra_args", []),
         ),
         versioning=VersioningConfig(
@@ -130,7 +189,11 @@ def load_config(path: str | Path) -> Config:
             config_vdf_path=_expand_path(steam_raw["config_vdf_path"]),
             username=steam_raw["username"],
             app_id=str(steam_raw["app_id"]),
-            depot_id=str(steam_raw["depot_id"]),
+            depots=_load_depots(
+                steam_raw,
+                {build.id for build in builds},
+                {build.id for build in builds if build.enabled},
+            ),
             set_live_branch=steam_raw.get("set_live_branch", ""),
             build_description=steam_raw.get("build_description", ""),
         ),

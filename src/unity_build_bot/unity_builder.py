@@ -5,14 +5,19 @@ import logging
 import subprocess
 from pathlib import Path
 
-from unity_build_bot.config import UnityConfig
+from unity_build_bot.config import UnityBuildConfig, UnityConfig
 
 logger = logging.getLogger("unity_build_bot")
 
 
-def build(unity_cfg: UnityConfig, repo_workdir: Path, version: str) -> None:
+def build(
+    unity_cfg: UnityConfig,
+    build_cfg: UnityBuildConfig,
+    repo_workdir: Path,
+    version: str,
+) -> None:
     project_path = (repo_workdir / unity_cfg.project_subpath).resolve()
-    output_dir = unity_cfg.output_subdir
+    output_dir = build_cfg.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
     editor_log = output_dir / "unity_editor.log"
 
@@ -23,15 +28,20 @@ def build(unity_cfg: UnityConfig, repo_workdir: Path, version: str) -> None:
         "-nographics",
         "-projectPath", str(project_path),
         "-executeMethod", unity_cfg.build_method,
-        "-buildTarget", unity_cfg.build_target,
+        "-buildTarget", build_cfg.build_target,
         "-customBuildOutput", str(output_dir),
         "-customBuildVersion", version,
-        "-customBuildName", unity_cfg.build_name,
+        "-customBuildName", build_cfg.build_name,
         "-logFile", str(editor_log),
         *unity_cfg.extra_args,
     ]
 
-    logger.info("Starting Unity build (target=%s, version=%s)", unity_cfg.build_target, version)
+    logger.info(
+        "Starting Unity build (id=%s, target=%s, version=%s)",
+        build_cfg.id,
+        build_cfg.build_target,
+        version,
+    )
     logger.debug("Unity command: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 

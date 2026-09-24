@@ -16,11 +16,19 @@ git:
 unity:
   executable_path: "/Applications/Unity/Hub/Editor/2022.3.40f1/Unity.app/Contents/MacOS/Unity"
   project_subpath: "."                 # Unity project folder relative to workdir
-  build_target: "StandaloneOSX"        # StandaloneWindows64 | StandaloneOSX | StandaloneLinux64
   build_method: "BuildScript.PerformBuild"
-  output_subdir: "workspace/build"     # relative to this tool's project root
-  build_name: "Game"                   # output filename, without target-specific extension
   extra_args: []                       # e.g. ["-nographics"]
+  builds:
+    - id: "macos"
+      enabled: true                     # false to skip macOS
+      build_target: "StandaloneOSX"
+      output_subdir: "workspace/build/macos"
+      build_name: "Game"               # output filename, without .app
+    - id: "windows"
+      enabled: true                     # false to skip Windows
+      build_target: "StandaloneWindows64"
+      output_subdir: "workspace/build/windows"
+      build_name: "Game"               # output filename, without .exe
 
 versioning:
   version_file: "version.txt"          # relative to repo workdir root
@@ -32,7 +40,9 @@ steam:
   config_vdf_path: "~/Steam/config/config.vdf"  # cached login session (see steam-deploy/README.md)
   username: "your-steam-builder-account"
   app_id: "123456"
-  depot_id: "123457"
+  depots:                              # keys must match unity.builds IDs
+    macos: "123457"
+    windows: "123458"
   set_live_branch: ""                  # leave empty to upload without setting a branch live
   build_description: ""                # empty = auto timestamp
 

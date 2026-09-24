@@ -35,8 +35,14 @@ def run(config_path: str) -> int:
             version = version_file.bump_version(version, cfg.versioning.bump_part)
         logger.info("Building version %s", version)
 
-        unity_builder.build(cfg.unity, cfg.git.workdir, version)
-        steam_uploader.upload(cfg.steam, cfg.unity.output_subdir, cfg.git.workdir)
+        content_roots = {}
+        for build_cfg in cfg.unity.builds:
+            if not build_cfg.enabled:
+                logger.info("Skipping disabled build %s", build_cfg.id)
+                continue
+            unity_builder.build(cfg.unity, build_cfg, cfg.git.workdir, version)
+            content_roots[build_cfg.id] = build_cfg.output_subdir
+        steam_uploader.upload(cfg.steam, content_roots, cfg.git.workdir)
 
         if cfg.versioning.auto_increment:
             version_file.write_version(version_path, version)
