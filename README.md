@@ -106,4 +106,4 @@ the Unity project, build it, and upload it to Steam.
 - **Logs are kept outside git** (default `~/.unity-build-bot/logs`), not committed to the game repo, to avoid leaking machine paths/usernames and repo bloat.
 - **Polling, not a webhook**, for simplicity — `git ls-remote` is cheap and doesn't require inbound networking on the build machine.
 - **Platform support is required.** The Unity installation running the job must include a build-support module for every target in `unity.builds`.
-- **Workspace is force-synced** (`git reset --hard` + `git clean -xdf`) before every build for reproducibility — don't keep uncommitted local changes in the watched repo's working copy.
+- **Workspace is force-synced.** Before an initial clone, the configured `git.workdir` is removed completely. Existing clones use `git reset --hard` plus `git clean -xdf`. Don't keep any other files or uncommitted changes there.

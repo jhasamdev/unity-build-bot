@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,13 @@ def sync_workdir(git_cfg: GitConfig) -> None:
     """Clone if needed, otherwise fetch + hard reset + clean to match origin/branch."""
     workdir = git_cfg.workdir
     if not (workdir / ".git").is_dir():
+        if workdir.parent == workdir:
+            raise RuntimeError(f"Refusing to clear filesystem root: {workdir}")
+        if workdir.is_dir():
+            logger.info("Clearing existing work directory %s", workdir)
+            shutil.rmtree(workdir)
+        elif workdir.exists():
+            workdir.unlink()
         workdir.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Cloning %s into %s", git_cfg.repo_url, workdir)
         result = _run(["git", "clone", "--branch", git_cfg.branch, git_cfg.repo_url, str(workdir)])
