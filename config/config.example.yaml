@@ -36,8 +36,9 @@ versioning:
   bump_part: "patch"                   # patch | minor | major
 
 steam:
-  steamcmd_path: "/usr/local/bin/steamcmd"   # local steamcmd install
-  config_vdf_path: "~/Steam/config/config.vdf"  # cached login session (see steam-deploy/README.md)
+  # Windows: C:/steamcmd/steamcmd.exe and C:/steamcmd/config/config.vdf
+  steamcmd_path: "~/steamcmd/steamcmd.sh"
+  config_vdf_path: "~/steamcmd/config/config.vdf"  # created by the one-time SteamCMD login
   username: "your-steam-builder-account"
   app_id: "123456"
   depots:                              # keys must match unity.builds IDs

@@ -5,10 +5,16 @@ set -euo pipefail
 
 TOOL_PATH="${1:?Usage: $0 <tool_path> <interval_seconds>}"
 INTERVAL="${2:-300}"
+PYTHON_PATH="${TOOL_PATH}/.venv/bin/python"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/com.unitybuildbot.run.plist"
 
-mkdir -p "${PLIST_DIR}"
+if [[ ! -x "${PYTHON_PATH}" ]]; then
+    echo "Python virtual environment not found at ${PYTHON_PATH}. Run the Python setup first." >&2
+    exit 1
+fi
+
+mkdir -p "${PLIST_DIR}" "${TOOL_PATH}/logs"
 cat > "${PLIST_PATH}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -18,7 +24,7 @@ cat > "${PLIST_PATH}" <<EOF
     <string>com.unitybuildbot.run</string>
     <key>ProgramArguments</key>
     <array>
-        <string>python3</string>
+        <string>${PYTHON_PATH}</string>
         <string>-m</string>
         <string>unity_build_bot</string>
         <string>run</string>

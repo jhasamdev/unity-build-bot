@@ -5,10 +5,15 @@
 param(
     [string]$ToolPath = "$PSScriptRoot\..",
     [string]$ConfigPath = "$PSScriptRoot\..\config\config.yaml",
+    [string]$PythonPath = "$PSScriptRoot\..\.venv\Scripts\python.exe",
     [int]$IntervalMinutes = 5
 )
 
-$action = New-ScheduledTaskAction -Execute "python" `
+if (-not (Test-Path -Path $PythonPath -PathType Leaf)) {
+    throw "Python virtual environment not found at '$PythonPath'. Run the Python setup first."
+}
+
+$action = New-ScheduledTaskAction -Execute $PythonPath `
     -Argument "-m unity_build_bot run --config `"$ConfigPath`"" `
     -WorkingDirectory $ToolPath
 

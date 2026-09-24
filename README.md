@@ -28,18 +28,208 @@ scripts/
 
 ## Setup
 
-1. `python -m venv .venv && source .venv/bin/activate` (or `.venv\Scripts\activate` on Windows)
-2. `pip install -e .`
-3. `cp config/config.example.yaml config/config.yaml` and fill in your repo, Unity, and Steam settings.
-4. Copy `unity_editor/Editor/BuildScript.cs` into your Unity project's `Assets/Editor/` folder and commit it there.
-5. Ensure the target Unity project's repo root contains a `version.txt` with a starting version (e.g. `0.1.0`).
-6. Seed the Steam session once, locally: `steamcmd +login <builder_account> +quit`, solving the Steam Guard prompt — this writes the `config.vdf` referenced by `steam.config_vdf_path`.
-7. Set up git auth: prefer an SSH deploy key loaded in `ssh-agent` for the builder machine (read-only access to the repo). For HTTPS, set a `GIT_TOKEN` environment variable and reference it via `auth_token_env`.
-8. Test a single run: `python -m unity_build_bot run --config config/config.yaml`
-9. Check status any time: `python -m unity_build_bot status --config config/config.yaml`
-10. Install the scheduler:
-    - Windows: `powershell scripts/schedule_windows_task.ps1`
-    - macOS: `./scripts/schedule_macos_launchd.sh "$(pwd)" 300`
+1. Set up Python using the instructions below.
+2. Copy `config/config.example.yaml` to `config/config.yaml` and fill in your repo, Unity, and Steam settings.
+3. Copy `unity_editor/Editor/BuildScript.cs` into your Unity project's `Assets/Editor/` folder and commit it there.
+4. Ensure the target Unity project's repo root contains a `version.txt` with a starting version (for example, `0.1.0`).
+5. Install and initialize SteamCMD using the instructions below.
+6. Set up Git authentication. Prefer an SSH deploy key loaded in `ssh-agent`. For HTTPS, set a `GIT_TOKEN` environment variable and use `auth_token_env: "GIT_TOKEN"`.
+7. Test one run using the commands in the Python setup section.
+8. Install the scheduler only after the manual run succeeds.
+
+### Set up Python
+
+Python 3.10 or newer is required. Run these commands from the repository root.
+The project uses `.venv` so its dependencies do not affect the system Python.
+Activation is optional because the commands below invoke `.venv` directly.
+
+#### macOS
+
+1. Verify Python is available and is version 3.10 or newer:
+
+  ```bash
+  python3 --version
+  ```
+
+  If the command is missing or reports an older version, install a current
+  Python release from [python.org](https://www.python.org/downloads/macos/)
+  or with Homebrew: `brew install python`.
+
+2. Create the virtual environment and install the bot:
+
+  ```bash
+  python3 -m venv .venv
+  .venv/bin/python -m pip install --upgrade pip
+  .venv/bin/python -m pip install -e .
+  ```
+
+3. Confirm that the command was installed:
+
+  ```bash
+  .venv/bin/unity-build-bot --help
+  ```
+
+4. Copy the example configuration and edit it:
+
+  ```bash
+  cp config/config.example.yaml config/config.yaml
+  ```
+
+5. Check the configuration and state without starting a build:
+
+  ```bash
+  .venv/bin/unity-build-bot status --config config/config.yaml
+  ```
+
+6. After completing the Unity and SteamCMD setup, run the job once manually:
+
+  ```bash
+  .venv/bin/unity-build-bot run --config config/config.yaml
+  ```
+
+7. When the manual run succeeds, install the scheduler:
+
+  ```bash
+  chmod +x scripts/schedule_macos_launchd.sh
+  ./scripts/schedule_macos_launchd.sh "$(pwd)" 300
+  ```
+
+#### Windows PowerShell
+
+1. Verify Python is available and is version 3.10 or newer:
+
+  ```powershell
+  py --version
+  ```
+
+  If the command is missing or reports an older version, install a current
+  Python release from [python.org](https://www.python.org/downloads/windows/).
+  During installation, enable the Python launcher and add Python to `PATH`.
+
+2. Create the virtual environment and install the bot:
+
+  ```powershell
+  py -m venv .venv
+  .\.venv\Scripts\python.exe -m pip install --upgrade pip
+  .\.venv\Scripts\python.exe -m pip install -e .
+  ```
+
+3. Confirm that the command was installed:
+
+  ```powershell
+  .\.venv\Scripts\unity-build-bot.exe --help
+  ```
+
+4. Copy the example configuration and edit it:
+
+  ```powershell
+  Copy-Item config\config.example.yaml config\config.yaml
+  ```
+
+5. Check the configuration and state without starting a build:
+
+  ```powershell
+  .\.venv\Scripts\unity-build-bot.exe status --config config\config.yaml
+  ```
+
+6. After completing the Unity and SteamCMD setup, run the job once manually:
+
+  ```powershell
+  .\.venv\Scripts\unity-build-bot.exe run --config config\config.yaml
+  ```
+
+7. When the manual run succeeds, install the scheduler:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1
+  ```
+
+Both scheduler scripts use the Python interpreter inside `.venv`. Do not
+delete or move `.venv` after installing the scheduled job; recreate the job
+if the repository is moved.
+
+### Set up SteamCMD
+
+SteamCMD needs a one-time interactive login before the bot can upload builds
+without supervision. Use a dedicated Steam build account that has permission
+to upload the configured app and depots.
+
+#### macOS
+
+1. Create a dedicated installation directory and download SteamCMD:
+
+    ```bash
+    mkdir -p ~/steamcmd
+    cd ~/steamcmd
+    curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz | tar -xz
+    ```
+
+2. Start SteamCMD and log in once:
+
+    ```bash
+    ~/steamcmd/steamcmd.sh +login <builder_account> +quit
+    ```
+
+3. Enter the account password and Steam Guard code when prompted. Never put
+    the password or Steam Guard code in `config.yaml`.
+
+4. Verify the executable and cached session:
+
+    ```bash
+    test -x ~/steamcmd/steamcmd.sh && echo "SteamCMD is installed"
+    test -f ~/steamcmd/config/config.vdf && echo "Steam session is ready"
+    ```
+
+5. Configure the matching paths:
+
+   ```yaml
+   steam:
+     steamcmd_path: "~/steamcmd/steamcmd.sh"
+     config_vdf_path: "~/steamcmd/config/config.vdf"
+     username: "your-steam-builder-account"
+   ```
+
+#### Windows PowerShell
+
+1. Create a dedicated installation directory and download SteamCMD:
+
+   ```powershell
+   New-Item -ItemType Directory -Force C:\steamcmd | Out-Null
+   Invoke-WebRequest `
+     https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip `
+     -OutFile C:\steamcmd\steamcmd.zip
+   Expand-Archive C:\steamcmd\steamcmd.zip C:\steamcmd -Force
+   ```
+
+2. Start SteamCMD and log in once:
+
+    ```powershell
+    C:\steamcmd\steamcmd.exe +login <builder_account> +quit
+    ```
+
+3. Enter the account password and Steam Guard code when prompted. Never put
+    the password or Steam Guard code in `config.yaml`.
+
+4. Verify the executable and cached session:
+
+    ```powershell
+    Test-Path C:\steamcmd\steamcmd.exe
+    Test-Path C:\steamcmd\config\config.vdf
+    ```
+
+5. Configure the matching paths. Forward slashes avoid YAML escaping issues:
+
+   ```yaml
+   steam:
+     steamcmd_path: "C:/steamcmd/steamcmd.exe"
+     config_vdf_path: "C:/steamcmd/config/config.vdf"
+     username: "your-steam-builder-account"
+   ```
+
+The scheduled task must run as the same operating-system user that performed
+the SteamCMD login. If Steam invalidates the cached session, repeat the login
+command and complete Steam Guard again. You can then rerun the bot without
+changing its configuration.
 
 ### Configure platform builds
 
