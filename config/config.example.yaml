@@ -36,6 +36,9 @@ versioning:
   auto_increment: true
   bump_part: "patch"                   # patch | minor | major
 
+job:
+  mode: "build_and_upload"             # build_and_upload | upload_only
+
 steam:
   # Windows: C:/steamcmd/steamcmd.exe and C:/steamcmd/config/config.vdf
   steamcmd_path: "~/steamcmd/steamcmd.sh"

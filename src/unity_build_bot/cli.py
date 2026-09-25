@@ -8,11 +8,32 @@ import argparse
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from unity_build_bot import git_watcher, steam_uploader, unity_builder, version_file
 from unity_build_bot.config import load_config
 from unity_build_bot.logging_utils import setup_logging
 from unity_build_bot.state import State
+
+
+def _content_roots_from_enabled_builds(cfg) -> dict[str, Path]:
+    return {
+        build_cfg.id: build_cfg.output_subdir
+        for build_cfg in cfg.unity.builds
+        if build_cfg.enabled
+    }
+
+
+def _validate_content_roots(content_roots: dict[str, Path]) -> None:
+    missing = [
+        f"{build_id}: {content_root}"
+        for build_id, content_root in content_roots.items()
+        if not content_root.is_dir()
+    ]
+    if missing:
+        raise RuntimeError(
+            "Cannot upload because build output is missing: " + ", ".join(missing)
+        )
 
 
 def run(config_path: str) -> int:
@@ -25,6 +46,10 @@ def run(config_path: str) -> int:
     state = State.load(cfg.state.state_file)
 
     try:
+        if cfg.job.mode == "upload_only":
+            logger.info("Job mode is upload_only; skipping Git sync and Unity build")
+            return upload_existing_outputs(cfg, logger)
+
         new_sha = git_watcher.has_new_commit(cfg.git, state.last_built_sha)
         if new_sha is None:
             logger.info("No new commits on %s, nothing to do.", cfg.git.branch)
@@ -67,6 +92,30 @@ def run(config_path: str) -> int:
         return 1
 
 
+def upload(config_path: str) -> int:
+    cfg = load_config(config_path)
+    logger = setup_logging(
+        cfg.logging.log_dir,
+        cfg.logging.level,
+        cfg.logging.show_activity_window,
+    )
+
+    try:
+        return upload_existing_outputs(cfg, logger)
+    except Exception as exc:  # noqa: BLE001 - top-level job boundary
+        logger.exception("Upload-only run failed: %s", exc)
+        return 1
+
+
+def upload_existing_outputs(cfg, logger: logging.Logger) -> int:
+    content_roots = _content_roots_from_enabled_builds(cfg)
+    _validate_content_roots(content_roots)
+    logger.info("Uploading existing build outputs without running Unity")
+    steam_uploader.upload(cfg.steam, content_roots, cfg.git.workdir)
+    logger.info("Upload-only run complete")
+    return 0
+
+
 def status(config_path: str) -> int:
     cfg = load_config(config_path)
     state = State.load(cfg.state.state_file)
@@ -84,12 +133,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="unity-build-bot", parents=[common])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Check for a new commit and build/upload if found", parents=[common])
+    sub.add_parser("upload", help="Upload existing build outputs without syncing or building", parents=[common])
     sub.add_parser("status", help="Print last recorded run state", parents=[common])
 
     args = parser.parse_args(argv)
 
     if args.command == "run":
         return run(args.config)
+    if args.command == "upload":
+        return upload(args.config)
     if args.command == "status":
         return status(args.config)
 

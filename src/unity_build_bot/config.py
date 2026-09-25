@@ -82,6 +82,11 @@ class StateConfig:
 
 
 @dataclass
+class JobConfig:
+    mode: str = "build_and_upload"
+
+
+@dataclass
 class Config:
     git: GitConfig
     unity: UnityConfig
@@ -89,6 +94,7 @@ class Config:
     steam: SteamConfig
     logging: LoggingConfig
     state: StateConfig
+    job: JobConfig
 
 
 def _expand_path(p: str) -> Path:
@@ -164,6 +170,7 @@ def load_config(path: str | Path) -> Config:
     steam_raw = raw.get("steam", {})
     logging_raw = raw.get("logging", {})
     state_raw = raw.get("state", {})
+    job_raw = raw.get("job", {})
 
     builds = _load_builds(unity_raw)
     show_activity_window = logging_raw.get("show_activity_window", False)
@@ -174,6 +181,9 @@ def load_config(path: str | Path) -> Config:
     workspace_root = _expand_path(git_raw["workspace_root"])
     if workspace_root not in workdir.parents:
         raise ValueError("git.workdir must be inside git.workspace_root")
+    job_mode = job_raw.get("mode", "build_and_upload")
+    if job_mode not in {"build_and_upload", "upload_only"}:
+        raise ValueError("job.mode must be 'build_and_upload' or 'upload_only'")
 
     return Config(
         git=GitConfig(
@@ -216,4 +226,5 @@ def load_config(path: str | Path) -> Config:
         state=StateConfig(
             state_file=_expand_path(state_raw.get("state_file", "~/.unity-build-bot/state.json")),
         ),
+        job=JobConfig(mode=job_mode),
     )

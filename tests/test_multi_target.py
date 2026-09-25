@@ -8,7 +8,7 @@ import yaml
 
 from unity_build_bot import cli
 from unity_build_bot.config import SteamConfig, load_config
-from unity_build_bot.steam_uploader import _write_vdfs
+from unity_build_bot.steam_uploader import _successful_build_id, _write_vdfs
 
 
 def _config_data() -> dict:
@@ -55,6 +55,15 @@ class MultiTargetConfigTests(TestCase):
         self.assertEqual("LegacyGame", config.unity.builds[0].build_name)
         self.assertEqual({"default": "101"}, config.steam.depots)
         self.assertFalse(config.logging.show_activity_window)
+        self.assertEqual("build_and_upload", config.job.mode)
+
+    def test_upload_only_mode_loads_from_config(self):
+        data = _config_data()
+        data["job"] = {"mode": "upload_only"}
+
+        config = self._load(data)
+
+        self.assertEqual("upload_only", config.job.mode)
 
     def test_multi_target_config_supports_enabled_selection(self):
         data = _config_data()
@@ -129,6 +138,7 @@ class MultiTargetRunTests(TestCase):
                 show_activity_window=False,
             ),
             state=SimpleNamespace(state_file=Path("state.json")),
+            job=SimpleNamespace(mode="build_and_upload"),
         )
         state = SimpleNamespace(
             last_built_sha="old-sha",
@@ -155,6 +165,140 @@ class MultiTargetRunTests(TestCase):
             config.git.workdir,
         )
 
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.steam_uploader.upload")
+    @patch("unity_build_bot.cli.unity_builder.build")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit")
+    @patch("unity_build_bot.cli.load_config")
+    def test_upload_skips_git_and_unity(
+        self,
+        load_config_mock,
+        has_new_commit_mock,
+        sync_workdir_mock,
+        build_mock,
+        upload_mock,
+        _setup_logging_mock,
+    ):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            macos_output = root / "build/macos"
+            macos_output.mkdir(parents=True)
+            windows_output = root / "build/windows"
+            config = SimpleNamespace(
+                git=SimpleNamespace(workdir=root / "repo"),
+                unity=SimpleNamespace(builds=[
+                    SimpleNamespace(id="macos", output_subdir=macos_output, enabled=True),
+                    SimpleNamespace(id="windows", output_subdir=windows_output, enabled=False),
+                ]),
+                steam=Mock(),
+                logging=SimpleNamespace(
+                    log_dir=root / "logs",
+                    level="INFO",
+                    show_activity_window=False,
+                ),
+            )
+            load_config_mock.return_value = config
+
+            result = cli.upload("config.yaml")
+
+        self.assertEqual(0, result)
+        has_new_commit_mock.assert_not_called()
+        sync_workdir_mock.assert_not_called()
+        build_mock.assert_not_called()
+        upload_mock.assert_called_once_with(
+            config.steam,
+            {"macos": macos_output},
+            config.git.workdir,
+        )
+
+    @patch("unity_build_bot.cli.State.load")
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.steam_uploader.upload")
+    @patch("unity_build_bot.cli.unity_builder.build")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit")
+    @patch("unity_build_bot.cli.load_config")
+    def test_run_uses_upload_only_mode_from_config(
+        self,
+        load_config_mock,
+        has_new_commit_mock,
+        sync_workdir_mock,
+        build_mock,
+        upload_mock,
+        _setup_logging_mock,
+        state_load_mock,
+    ):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            macos_output = root / "build/macos"
+            macos_output.mkdir(parents=True)
+            config = SimpleNamespace(
+                git=SimpleNamespace(branch="main", workdir=root / "repo"),
+                unity=SimpleNamespace(builds=[
+                    SimpleNamespace(id="macos", output_subdir=macos_output, enabled=True),
+                ]),
+                steam=Mock(),
+                versioning=SimpleNamespace(version_file="version.txt", auto_increment=False),
+                logging=SimpleNamespace(
+                    log_dir=root / "logs",
+                    level="INFO",
+                    show_activity_window=False,
+                ),
+                state=SimpleNamespace(state_file=root / "state.json"),
+                job=SimpleNamespace(mode="upload_only"),
+            )
+            state = SimpleNamespace(
+                last_built_sha="old-sha",
+                last_version=None,
+                last_status=None,
+                last_run_at=None,
+                save=Mock(),
+            )
+            load_config_mock.return_value = config
+            state_load_mock.return_value = state
+
+            result = cli.run("config.yaml")
+
+        self.assertEqual(0, result)
+        has_new_commit_mock.assert_not_called()
+        sync_workdir_mock.assert_not_called()
+        build_mock.assert_not_called()
+        state.save.assert_not_called()
+        upload_mock.assert_called_once_with(
+            config.steam,
+            {"macos": macos_output},
+            config.git.workdir,
+        )
+
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.steam_uploader.upload")
+    @patch("unity_build_bot.cli.load_config")
+    def test_upload_fails_when_enabled_output_is_missing(
+        self,
+        load_config_mock,
+        upload_mock,
+        _setup_logging_mock,
+    ):
+        config = SimpleNamespace(
+            git=SimpleNamespace(workdir=Path("repo")),
+            unity=SimpleNamespace(builds=[
+                SimpleNamespace(id="macos", output_subdir=Path("missing/macos"), enabled=True),
+            ]),
+            steam=Mock(),
+            logging=SimpleNamespace(
+                log_dir=Path("logs"),
+                level="INFO",
+                show_activity_window=False,
+            ),
+        )
+        load_config_mock.return_value = config
+
+        result = cli.upload("config.yaml")
+
+        self.assertEqual(1, result)
+        upload_mock.assert_not_called()
+
 
 class MultiDepotVdfTests(TestCase):
     def test_app_build_references_every_depot(self):
@@ -179,5 +323,12 @@ class MultiDepotVdfTests(TestCase):
             app_contents = app_vdf.read_text()
             self.assertIn('"101"', app_contents)
             self.assertIn('"102"', app_contents)
-            self.assertIn(f'"LocalPath"\t"{root / "macos"}/*"', (root / "vdf/depot_101.vdf").read_text())
-            self.assertIn(f'"LocalPath"\t"{root / "windows"}/*"', (root / "vdf/depot_102.vdf").read_text())
+            self.assertIn(f'"contentroot"\t"{root.resolve()}"', app_contents)
+            self.assertIn('"LocalPath"\t"macos/*"', (root / "vdf/depot_101.vdf").read_text())
+            self.assertIn('"LocalPath"\t"windows/*"', (root / "vdf/depot_102.vdf").read_text())
+
+    def test_detects_steamcmd_successful_build_line(self):
+        output = "[2026-09-24 22:07:50]: Successfully finished AppID 4513280 build (BuildID 25520824)."
+
+        self.assertEqual("25520824", _successful_build_id(output, "4513280"))
+        self.assertIsNone(_successful_build_id(output, "999"))

@@ -12,7 +12,7 @@ config/
   config.example.yaml   # copy to config.yaml (gitignored) and edit
   secrets.example.yaml   # optional, copy to secrets.yaml (gitignored)
 src/unity_build_bot/
-  cli.py                 # entry point: `run` and `status` subcommands
+  cli.py                 # entry point: `run`, `upload`, and `status` subcommands
   config.py              # loads config.yaml, expands ${ENV_VAR}
   git_watcher.py         # ls-remote polling + clean pull
   unity_builder.py        # invokes Unity -batchmode
@@ -289,6 +289,37 @@ py -m unity_build_bot status --config config/config.yaml
 The `status` command safely checks that the source tree and configuration are
 usable. To run the actual job once, replace `status` with `run`; this can pull
 the Unity project, build it, and upload it to Steam.
+
+### Upload existing builds only
+
+Use `upload` when the build outputs already exist and you only want to publish
+them to Steam. This mode does not check Git, clear `git.workspace_root`, clone,
+run Unity, bump the version file, or update `last_built_sha`.
+
+For scheduled runs, set the job mode in `config.yaml`:
+
+```yaml
+job:
+  mode: "upload_only"
+```
+
+Leave it as `build_and_upload` for the normal Git sync, Unity build, and Steam
+upload workflow.
+
+macOS:
+
+```bash
+.venv/bin/unity-build-bot upload --config config/config.yaml
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\unity-build-bot.exe upload --config config\config.yaml
+```
+
+Every enabled `unity.builds` entry must already have files in its configured
+`output_subdir`. Disabled builds are ignored.
 
 ### Live activity window
 
