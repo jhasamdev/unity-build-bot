@@ -177,7 +177,7 @@ to upload the configured app and depots.
 
     ```bash
     test -x ~/steamcmd/steamcmd.sh && echo "SteamCMD is installed"
-    test -f ~/steamcmd/config/config.vdf && echo "Steam session is ready"
+    test -f "$HOME/Library/Application Support/Steam/config/config.vdf" && echo "Steam session is ready"
     ```
 
 5. Configure the matching paths:
@@ -185,7 +185,7 @@ to upload the configured app and depots.
    ```yaml
    steam:
      steamcmd_path: "~/steamcmd/steamcmd.sh"
-     config_vdf_path: "~/steamcmd/config/config.vdf"
+     config_vdf_path: "~/Library/Application Support/Steam/config/config.vdf"
      username: "your-steam-builder-account"
    ```
 
@@ -314,4 +314,4 @@ to the log file normally.
 - **Logs are kept outside git** (default `~/.unity-build-bot/logs`), not committed to the game repo, to avoid leaking machine paths/usernames and repo bloat.
 - **Polling, not a webhook**, for simplicity — `git ls-remote` is cheap and doesn't require inbound networking on the build machine.
 - **Platform support is required.** The Unity installation running the job must include a build-support module for every target in `unity.builds`.
-- **Workspace is force-synced.** Before an initial clone, the configured `git.workdir` is removed completely. Existing clones use `git reset --hard` plus `git clean -xdf`. Don't keep any other files or uncommitted changes there.
+- **The complete workspace is disposable.** Before each build synchronization, the bot deletes `git.workspace_root`, recreates it, and freshly clones the repository into `git.workdir`. Build outputs inside the workspace are also removed. Keep no files there that are not safe to delete.

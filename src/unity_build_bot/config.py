@@ -29,6 +29,7 @@ class GitConfig:
     repo_url: str
     branch: str
     workdir: Path
+    workspace_root: Path
     auth_token_env: str | None = None
 
 
@@ -169,11 +170,17 @@ def load_config(path: str | Path) -> Config:
     if not isinstance(show_activity_window, bool):
         raise ValueError("logging.show_activity_window must be true or false")
 
+    workdir = _expand_path(git_raw["workdir"])
+    workspace_root = _expand_path(git_raw["workspace_root"])
+    if workspace_root not in workdir.parents:
+        raise ValueError("git.workdir must be inside git.workspace_root")
+
     return Config(
         git=GitConfig(
             repo_url=git_raw["repo_url"],
             branch=git_raw["branch"],
-            workdir=_expand_path(git_raw["workdir"]),
+            workdir=workdir,
+            workspace_root=workspace_root,
             auth_token_env=git_raw.get("auth_token_env"),
         ),
         unity=UnityConfig(

@@ -6,6 +6,7 @@
 git:
   repo_url: "git@github.com:youraccount/your-unity-project.git"
   branch: "main"
+  workspace_root: "./workspace"       # fully deleted before each fresh clone
   workdir: "./workspace/repo"          # local clone used by the bot
   # Auth: prefer an SSH deploy key (read-only) already loaded in ssh-agent,
   # or set auth_token_env to the name of an env var holding a GitHub PAT
@@ -38,7 +39,7 @@ versioning:
 steam:
   # Windows: C:/steamcmd/steamcmd.exe and C:/steamcmd/config/config.vdf
   steamcmd_path: "~/steamcmd/steamcmd.sh"
-  config_vdf_path: "~/steamcmd/config/config.vdf"  # created by the one-time SteamCMD login
+  config_vdf_path: "~/Library/Application Support/Steam/config/config.vdf"  # macOS SteamCMD session
   username: "your-steam-builder-account"
   app_id: "123456"
   depots:                              # keys must match unity.builds IDs

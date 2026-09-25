@@ -13,7 +13,12 @@ from unity_build_bot.steam_uploader import _write_vdfs
 
 def _config_data() -> dict:
     return {
-        "git": {"repo_url": "example", "branch": "main", "workdir": "repo"},
+        "git": {
+            "repo_url": "example",
+            "branch": "main",
+            "workspace_root": "workspace",
+            "workdir": "workspace/repo",
+        },
         "unity": {
             "executable_path": "Unity",
             "project_subpath": ".",
