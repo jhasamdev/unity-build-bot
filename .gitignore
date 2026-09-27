@@ -1,6 +1,7 @@
 # Local configuration and secrets
 /config/config.yaml
 /config/secrets.yaml
+/logs
 /.env
 /.env.*
 !/.env.example
