@@ -1,6 +1,7 @@
 """Prevent overlapping scheduled bot runs."""
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
@@ -45,4 +46,8 @@ def _process_exists(pid: int) -> bool:
         os.kill(pid, 0)
     except (ProcessLookupError, PermissionError):
         return False
+    except OSError as exc:
+        if exc.errno == errno.ESRCH or getattr(exc, "winerror", None) == 87:
+            return False
+        raise
     return True
