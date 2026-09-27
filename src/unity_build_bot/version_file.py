@@ -29,5 +29,11 @@ def bump_version(version: str, part: str = "patch") -> str:
     return f"{major}.{minor}.{patch}"
 
 
+def append_short_commit_hash(version: str, commit_sha: str, length: int = 7) -> str:
+    if length < 1:
+        raise ValueError("Commit hash length must be positive")
+    return f"{version}.{commit_sha[:length]}"
+
+
 def write_version(version_file: Path, version: str) -> None:
     version_file.write_text(version + "\n")

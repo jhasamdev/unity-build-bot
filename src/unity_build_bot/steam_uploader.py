@@ -17,6 +17,26 @@ _SUCCESS_PATTERN = re.compile(
 )
 
 
+def _render_build_description(
+    template: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    if not template:
+        return f"unity-build-bot {datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+    values = {
+        "version": "unknown",
+        "branch": "unknown",
+        "short_sha": "unknown",
+        "targets": "unknown",
+    }
+    values.update(metadata or {})
+    return template.format_map(values)
+
+
+def _escape_vdf(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
+
+
 def _content_root_for(content_roots: dict[str, Path]) -> Path:
     resolved_roots = [content_root.resolve() for content_root in content_roots.values()]
     try:
@@ -64,7 +84,7 @@ def _write_vdfs(
     app_build_vdf.write_text(
         f'"appbuild"\n{{\n'
         f'\t"appid"\t"{steam_cfg.app_id}"\n'
-        f'\t"desc"\t"{description}"\n'
+        f'\t"desc"\t"{_escape_vdf(description)}"\n'
         f'\t"buildoutput"\t"{build_output}"\n'
         f'\t"contentroot"\t"{content_root}"\n'
         f'\t"setlive"\t"{steam_cfg.set_live_branch}"\n'
@@ -79,6 +99,7 @@ def upload(
     steam_cfg: SteamConfig,
     content_roots: dict[str, Path],
     workdir_root: Path,
+    build_metadata: dict[str, str] | None = None,
 ) -> None:
     if not steam_cfg.config_vdf_path.is_file():
         raise RuntimeError(
@@ -87,7 +108,9 @@ def upload(
             "(see steam-deploy/README.md)."
         )
 
-    description = steam_cfg.build_description or f"unity-build-bot {datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+    description = _render_build_description(
+        steam_cfg.build_description, build_metadata
+    )
     vdf_dir = workdir_root / ".unity-build-bot" / "vdf"
     app_build_vdf = _write_vdfs(steam_cfg, content_roots, vdf_dir, description)
 
@@ -105,7 +128,6 @@ def upload(
         ", ".join(steam_cfg.depots.values()),
         steam_cfg.set_live_branch or "<none>",
     )
-    logger.debug("steamcmd command: %s", " ".join(cmd))
     result = run_streaming(cmd, output_file=steamcmd_log)
 
     build_id = _successful_build_id(result.stdout, steam_cfg.app_id)

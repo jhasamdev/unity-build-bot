@@ -5,11 +5,37 @@ builds a Unity project headlessly, and uploads the build to Steam via
 SteamPipe (steamcmd). Runs on Windows or macOS, driven by the OS scheduler
 (no daemon required).
 
+## How it works
+
+```mermaid
+flowchart TD
+  A[Scheduled or manual run] --> B{Job mode?}
+  B -- Upload only --> C[Validate existing build outputs]
+  C --> D[Upload to Steam]
+  D --> E[Finish without changing build state]
+  B -- Build and upload --> F[Check remote branch commit]
+  F -- Same commit, last run succeeded --> G[Skip build]
+  F -- Build needed or retry --> H[Clear workspace and clone branch]
+  H --> I[Prepare version and build enabled Unity targets]
+  I --> J[Upload to Steam with retries]
+  J --> K[Save version and successful build state]
+  F -. Failure .-> L[Record failed run]
+  H -. Failure .-> L
+  I -. Failure .-> L
+  J -. Failure .-> L
+```
+
+A changed branch or a failed previous run also triggers a build, even if the
+commit SHA matches the saved one. Build runs clean up the workspace on exit;
+upload-only runs keep the existing outputs and do not update build state.
+
 ## Layout
 
 ```
 config/
   config.example.yaml   # copy to config.yaml (gitignored) and edit
+  config.example.macos.yaml   # explicit macOS starter config
+  config.example.windows.yaml # explicit Windows starter config
   secrets.example.yaml   # optional, copy to secrets.yaml (gitignored)
 src/unity_build_bot/
   cli.py                 # entry point: `run`, `upload`, and `status` subcommands
@@ -29,13 +55,16 @@ scripts/
 ## Setup
 
 1. Set up Python using the instructions below.
-2. Copy `config/config.example.yaml` to `config/config.yaml` and fill in your repo, Unity, and Steam settings.
-3. Copy `unity_editor/Editor/BuildScript.cs` into your Unity project's `Assets/Editor/` folder and commit it there.
-4. Ensure the target Unity project's repo root contains a `version.txt` with a starting version (for example, `0.1.0`).
-5. Install and initialize SteamCMD using the instructions below.
-6. Set up Git authentication. Prefer an SSH deploy key loaded in `ssh-agent`. For HTTPS, set a `GIT_TOKEN` environment variable and use `auth_token_env: "GIT_TOKEN"`.
-7. Test one run using the commands in the Python setup section.
-8. Install the scheduler only after the manual run succeeds.
+2. Copy the starter config for your operating system and fill in the repository, Unity, and Steam values.
+3. Add `BuildScript.cs` to the Unity project and ensure its root contains `version.txt`.
+4. Install SteamCMD and log in once interactively.
+5. Run `unity-build-bot doctor` and fix any reported setup failures.
+6. Run the job once manually; install the scheduler only after it succeeds.
+
+For private HTTPS remotes, set `auth_token_env: "GIT_TOKEN"` and either define
+`GIT_TOKEN` in the environment or copy `config/secrets.example.yaml` to
+`config/secrets.yaml` and fill in the token. Environment variables take
+precedence. SSH remotes continue to use the machine's SSH agent.
 
 ### Set up Python
 
@@ -69,29 +98,41 @@ Activation is optional because the commands below invoke `.venv` directly.
   .venv/bin/unity-build-bot --help
   ```
 
-4. Copy the example configuration and edit it:
+4. Copy the macOS starter configuration and edit it:
 
   ```bash
-  cp config/config.example.yaml config/config.yaml
+  cp config/config.example.macos.yaml config/config.yaml
   ```
 
-5. Check the configuration and state without starting a build:
+5. If using HTTPS Git authentication, copy the optional secrets file and add the token:
 
   ```bash
-  .venv/bin/unity-build-bot status --config config/config.yaml
+  cp config/secrets.example.yaml config/secrets.yaml
   ```
 
-6. After completing the Unity and SteamCMD setup, run the job once manually:
+6. Check the complete setup before building:
+
+  ```bash
+  .venv/bin/unity-build-bot doctor --config config/config.yaml
+  ```
+
+7. After completing the Unity and SteamCMD setup, run the job once manually:
 
   ```bash
   .venv/bin/unity-build-bot run --config config/config.yaml
   ```
 
-7. When the manual run succeeds, install the scheduler:
+8. When the manual run succeeds, install the scheduler:
 
   ```bash
   chmod +x scripts/schedule_macos_launchd.sh
   ./scripts/schedule_macos_launchd.sh "$(pwd)" 300
+  ```
+
+9. To stop and remove the scheduler later:
+
+  ```bash
+  ./scripts/schedule_macos_launchd.sh --uninstall
   ```
 
 #### Windows PowerShell
@@ -120,33 +161,49 @@ Activation is optional because the commands below invoke `.venv` directly.
   .\.venv\Scripts\unity-build-bot.exe --help
   ```
 
-4. Copy the example configuration and edit it:
+4. Copy the Windows starter configuration and edit it:
 
   ```powershell
-  Copy-Item config\config.example.yaml config\config.yaml
+  Copy-Item config\config.example.windows.yaml config\config.yaml
   ```
 
-5. Check the configuration and state without starting a build:
+5. If using HTTPS Git authentication, copy the optional secrets file and add the token:
 
   ```powershell
-  .\.venv\Scripts\unity-build-bot.exe status --config config\config.yaml
+  Copy-Item config\secrets.example.yaml config\secrets.yaml
   ```
 
-6. After completing the Unity and SteamCMD setup, run the job once manually:
+6. Check the complete setup before building:
+
+  ```powershell
+  .\.venv\Scripts\unity-build-bot.exe doctor --config config\config.yaml
+  ```
+
+7. After completing the Unity and SteamCMD setup, run the job once manually:
 
   ```powershell
   .\.venv\Scripts\unity-build-bot.exe run --config config\config.yaml
   ```
 
-7. When the manual run succeeds, install the scheduler:
+8. When the manual run succeeds, install the scheduler:
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1
   ```
 
+9. To stop and remove the scheduler later:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1 -Uninstall
+  ```
+
 Both scheduler scripts use the Python interpreter inside `.venv`. Do not
 delete or move `.venv` after installing the scheduled job; recreate the job
-if the repository is moved.
+if the repository is moved. Uninstalling removes only the scheduler entry; it
+does not delete configuration, logs, state, build output, or the repository.
+
+Relative paths in a config under `config/` resolve from the project root, so
+the same config works when invoked manually or by either scheduler.
 
 ### Set up SteamCMD
 
@@ -266,29 +323,75 @@ Install the macOS and Windows build-support modules for the configured Unity
 Editor version. Existing configs with one `build_target`, `output_subdir`,
 `build_name`, and `depot_id` remain supported.
 
+### Version labels
+
+The starter configs append the detected commit's short hash to each build
+version. For example, with `version.txt` set to `1.0.0` and automatic patch
+increments enabled, the build version is `1.0.1.abcdef1`. Configure it under
+`versioning`:
+
+```yaml
+versioning:
+  auto_increment: true
+  bump_part: "patch"
+  append_short_commit_hash: true
+  short_commit_hash_length: 7
+```
+
+Set `append_short_commit_hash` to `false` to keep plain semantic versions.
+The hash suffix is used for the build and recorded state; `version.txt` keeps
+only the incremented base version so the next build can bump it normally.
+
+The state file records the last detected commit SHA, generated build version,
+branch, status, and run time even when a build fails. Failed commits remain
+eligible for retry on the next scheduled run.
+
+### Steam build descriptions
+
+`steam.build_description` supports metadata placeholders so Steamworks builds
+are searchable and traceable:
+
+```yaml
+steam:
+  build_description: "{version} | {branch} | {short_sha} | {targets} | automated"
+```
+
+- `{version}` is the generated build version.
+- `{branch}` is the configured Git branch.
+- `{short_sha}` is the detected commit hash shortened using
+  `versioning.short_commit_hash_length`.
+- `{targets}` is the comma-separated list of enabled build IDs.
+
+An empty description retains the timestamp fallback. Upload-only runs use the
+saved state metadata; unavailable values appear as `unknown`.
+
 ### Test without installing the bot
 
-From the repository root, set `PYTHONPATH` to the `src` directory and invoke
-the module directly. This requires Python and the runtime dependency
-`PyYAML`, but does not require installing the bot package.
+From the repository root, use the platform-specific steps below. These
+commands require Python and the runtime dependency `PyYAML`, but do not
+require installing the bot package.
 
-On macOS or Linux:
+#### macOS
 
 ```bash
 export PYTHONPATH="$PWD/src"
-python3 -m unity_build_bot status --config config/config.yaml
+python3 -m unity_build_bot doctor --config config/config.yaml
+# Replace "doctor" with "run" to run the actual job once.
+python3 -m unity_build_bot run --config config/config.yaml
 ```
 
-On Windows PowerShell:
+#### Windows PowerShell
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-py -m unity_build_bot status --config config/config.yaml
+py -m unity_build_bot doctor --config config/config.yaml
+# Replace "doctor" with "run" to run the actual job once.
+py -m unity_build_bot run --config config/config.yaml
 ```
 
-The `status` command safely checks that the source tree and configuration are
-usable. To run the actual job once, replace `status` with `run`; this can pull
-the Unity project, build it, and upload it to Steam.
+The `doctor` command checks that the configuration and required tools are
+usable. The `run` command can pull the Unity project, build it, and upload it
+to Steam.
 
 ### Upload existing builds only
 
@@ -306,13 +409,27 @@ job:
 Leave it as `build_and_upload` for the normal Git sync, Unity build, and Steam
 upload workflow.
 
-macOS:
+Steam uploads are retried three times after a timeout, connection failure, or
+credential/session failure. Configure the retry count and delay under `job`:
+
+```yaml
+job:
+  steam_upload_retries: 3
+  steam_upload_retry_delay_seconds: 30
+```
+
+The scheduler uses a run lock. If a previous run is still active when the
+next scheduled interval starts, the new invocation logs that it was skipped
+and the scheduler tries again at the next interval. The workspace is cleaned
+up after successful, failed, and upload-only runs.
+
+#### macOS
 
 ```bash
 .venv/bin/unity-build-bot upload --config config/config.yaml
 ```
 
-Windows PowerShell:
+#### Windows PowerShell
 
 ```powershell
 .\.venv\Scripts\unity-build-bot.exe upload --config config\config.yaml
@@ -330,10 +447,13 @@ logging:
   show_activity_window: true
 ```
 
-The window displays Git cloning and synchronization, Unity build output,
-SteamCMD upload output, and the bot's status messages in real time. It closes
-when the bot process finishes. The normal daily log remains available under
-`logging.log_dir` whether or not the window is enabled.
+At `logging.level: INFO`, the window shows step starts, finishes, outcomes,
+the branch and commit, and commands executed (with credentials masked as `****`).
+Failures that stop the run are logged at ERROR; retryable attempts are WARNING.
+Set `logging.level: DEBUG` to also see Git, Unity, and SteamCMD command output
+and detailed activity. The window closes when the bot process finishes. The
+daily log remains available under `logging.log_dir` whether or not the window
+is enabled.
 
 The window requires an active logged-in desktop session. Scheduled jobs that
 run while the user is logged out cannot display UI, but they continue writing
@@ -341,7 +461,7 @@ to the log file normally.
 
 ## Notes / design decisions
 
-- **No secrets in config.yaml.** `config.yaml` and `secrets.yaml` are gitignored; use `${ENV_VAR}` placeholders or the OS keychain for anything sensitive.
+- **No secrets in config.yaml.** `config.yaml` and `secrets.yaml` are gitignored; use `secrets.yaml`, environment variables, or the OS keychain for anything sensitive.
 - **Logs are kept outside git** (default `~/.unity-build-bot/logs`), not committed to the game repo, to avoid leaking machine paths/usernames and repo bloat.
 - **Polling, not a webhook**, for simplicity — `git ls-remote` is cheap and doesn't require inbound networking on the build machine.
 - **Platform support is required.** The Unity installation running the job must include a build-support module for every target in `unity.builds`.

@@ -1,0 +1,52 @@
+# macOS starter config. Copy to config.yaml and fill in real values.
+# Secrets (passwords/tokens) are not stored here; see secrets.example.yaml.
+
+git:
+  repo_url: "git@github.com:youraccount/your-unity-project.git"
+  branch: "main"
+  workspace_root: "./workspace"
+  workdir: "./workspace/repo"
+  # Only used for HTTPS remotes. The value is read from the environment or secrets.yaml.
+  auth_token_env: "GIT_TOKEN"
+
+unity:
+  executable_path: "/Applications/Unity/Hub/Editor/2022.3.40f1/Unity.app/Contents/MacOS/Unity"
+  project_subpath: "."
+  build_method: "BuildScript.PerformBuild"
+  extra_args: []
+  builds:
+    - id: "macos"
+      enabled: true
+      build_target: "StandaloneOSX"
+      output_subdir: "workspace/build/macos"
+      build_name: "Game"
+
+versioning:
+  version_file: "version.txt"
+  auto_increment: true
+  bump_part: "patch"
+  append_short_commit_hash: true
+  short_commit_hash_length: 7
+
+job:
+  mode: "build_and_upload"
+  steam_upload_retries: 3
+  steam_upload_retry_delay_seconds: 30
+
+steam:
+  steamcmd_path: "~/steamcmd/steamcmd.sh"
+  config_vdf_path: "~/Library/Application Support/Steam/config/config.vdf"
+  username: "your-steam-builder-account"
+  app_id: "123456"
+  depots:
+    macos: "123457"
+  set_live_branch: ""
+  build_description: "{version} | {branch} | {short_sha} | {targets} | automated"
+
+logging:
+  log_dir: "~/.unity-build-bot/logs"
+  level: "INFO"
+  show_activity_window: false
+
+state:
+  state_file: "~/.unity-build-bot/state.json"

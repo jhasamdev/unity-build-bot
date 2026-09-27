@@ -1,4 +1,4 @@
-"""Small JSON state file: last built commit SHA, version, run history."""
+"""Small JSON state file: last attempted build SHA, version, branch, and status."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ from pathlib import Path
 class State:
     last_built_sha: str | None = None
     last_version: str | None = None
+    last_branch: str | None = None
     last_status: str | None = None
     last_run_at: str | None = None
 

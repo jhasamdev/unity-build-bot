@@ -6,8 +6,20 @@ param(
     [string]$ToolPath = "$PSScriptRoot\..",
     [string]$ConfigPath = "$PSScriptRoot\..\config\config.yaml",
     [string]$PythonPath = "$PSScriptRoot\..\.venv\Scripts\python.exe",
-    [int]$IntervalMinutes = 5
+    [int]$IntervalMinutes = 5,
+    [switch]$Uninstall
 )
+
+if ($Uninstall) {
+    $task = Get-ScheduledTask -TaskName "UnityBuildBot" -ErrorAction SilentlyContinue
+    if ($null -ne $task) {
+        Unregister-ScheduledTask -TaskName "UnityBuildBot" -Confirm:$false
+        Write-Host "Removed scheduled task 'UnityBuildBot'."
+    } else {
+        Write-Host "Scheduled task 'UnityBuildBot' is not installed."
+    }
+    exit 0
+}
 
 if (-not (Test-Path -Path $PythonPath -PathType Leaf)) {
     throw "Python virtual environment not found at '$PythonPath'. Run the Python setup first."

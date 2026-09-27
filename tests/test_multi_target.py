@@ -8,7 +8,11 @@ import yaml
 
 from unity_build_bot import cli
 from unity_build_bot.config import SteamConfig, load_config
-from unity_build_bot.steam_uploader import _successful_build_id, _write_vdfs
+from unity_build_bot.steam_uploader import (
+    _render_build_description,
+    _successful_build_id,
+    _write_vdfs,
+)
 
 
 def _config_data() -> dict:
@@ -41,11 +45,67 @@ def _config_data() -> dict:
 
 
 class MultiTargetConfigTests(TestCase):
-    def _load(self, data: dict):
+    def _load(self, data: dict, secrets: dict | None = None):
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(yaml.safe_dump(data))
+            if secrets is not None:
+                (config_path.parent / "secrets.yaml").write_text(yaml.safe_dump(secrets))
             return load_config(config_path)
+
+    def test_relative_paths_are_resolved_from_config_directory(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config" / "config.yaml"
+            config_path.parent.mkdir()
+            config_path.write_text(yaml.safe_dump(_config_data()))
+
+            config = load_config(config_path)
+
+            project_root = config_path.parent.parent
+            self.assertEqual((project_root / "workspace").resolve(), config.git.workspace_root)
+            self.assertEqual((project_root / "build").resolve(), config.unity.builds[0].output_subdir)
+
+    def test_secrets_file_supplies_configured_git_token(self):
+        data = _config_data()
+        data["git"]["repo_url"] = "https://github.com/example/game.git"
+        data["git"]["auth_token_env"] = "TEST_UNITY_BUILD_BOT_TOKEN"
+
+        config = self._load(data, {"TEST_UNITY_BUILD_BOT_TOKEN": "secret-token"})
+
+        self.assertEqual("secret-token", config.git.auth_token)
+
+    def test_environment_overrides_secrets_file(self):
+        data = _config_data()
+        data["git"]["repo_url"] = "https://github.com/example/game.git"
+        data["git"]["auth_token_env"] = "GIT_TOKEN"
+
+        with patch.dict("os.environ", {"GIT_TOKEN": "environment-token"}):
+            config = self._load(data, {"GIT_TOKEN": "file-token"})
+
+        self.assertEqual("environment-token", config.git.auth_token)
+
+    def test_missing_required_values_have_field_names(self):
+        data = _config_data()
+        del data["git"]["repo_url"]
+
+        with self.assertRaisesRegex(ValueError, "git.repo_url"):
+            self._load(data)
+
+    def test_invalid_yaml_reports_the_config_file(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text("git: [\n")
+
+            with self.assertRaisesRegex(ValueError, "Invalid YAML in configuration file"):
+                load_config(config_path)
+
+    def test_missing_configured_https_token_is_reported(self):
+        data = _config_data()
+        data["git"]["repo_url"] = "https://github.com/example/game.git"
+        data["git"]["auth_token_env"] = "UNITY_BUILD_BOT_MISSING_TOKEN"
+
+        with self.assertRaisesRegex(ValueError, "UNITY_BUILD_BOT_MISSING_TOKEN"):
+            self._load(data)
 
     def test_legacy_config_normalizes_to_default_build(self):
         config = self._load(_config_data())
@@ -56,6 +116,31 @@ class MultiTargetConfigTests(TestCase):
         self.assertEqual({"default": "101"}, config.steam.depots)
         self.assertFalse(config.logging.show_activity_window)
         self.assertEqual("build_and_upload", config.job.mode)
+        self.assertFalse(config.versioning.append_short_commit_hash)
+        self.assertEqual(7, config.versioning.short_commit_hash_length)
+
+    def test_versioning_config_controls_commit_hash_suffix(self):
+        data = _config_data()
+        data["versioning"] = {
+            "append_short_commit_hash": True,
+            "short_commit_hash_length": 10,
+        }
+
+        config = self._load(data)
+
+        self.assertTrue(config.versioning.append_short_commit_hash)
+        self.assertEqual(10, config.versioning.short_commit_hash_length)
+
+        data["versioning"]["short_commit_hash_length"] = 0
+        with self.assertRaisesRegex(ValueError, "integer from 1 to 64"):
+            self._load(data)
+
+    def test_rejects_unknown_build_description_placeholder(self):
+        data = _config_data()
+        data["steam"]["build_description"] = "{unknown}"
+
+        with self.assertRaisesRegex(ValueError, "Unsupported.*unknown"):
+            self._load(data)
 
     def test_upload_only_mode_loads_from_config(self):
         data = _config_data()
@@ -106,13 +191,15 @@ class MultiTargetConfigTests(TestCase):
 
 
 class MultiTargetRunTests(TestCase):
+    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.steam_uploader.upload")
     @patch("unity_build_bot.cli.unity_builder.build")
+    @patch("unity_build_bot.cli.version_file.write_version")
     @patch("unity_build_bot.cli.version_file.read_version", return_value="1.2.3")
     @patch("unity_build_bot.cli.git_watcher.sync_workdir")
-    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="new-sha")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="abcdef123456")
     @patch("unity_build_bot.cli.load_config")
     def test_run_builds_only_enabled_targets_before_upload(
         self,
@@ -120,18 +207,26 @@ class MultiTargetRunTests(TestCase):
         _has_new_commit_mock,
         _sync_workdir_mock,
         _read_version_mock,
+        write_version_mock,
         build_mock,
         upload_mock,
         setup_logging_mock,
         state_load_mock,
+        _remove_workspace_mock,
     ):
         macos = SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True)
         windows = SimpleNamespace(id="windows", output_subdir=Path("build/windows"), enabled=False)
         config = SimpleNamespace(
-            git=SimpleNamespace(branch="main", workdir=Path("repo")),
+            git=SimpleNamespace(branch="main", workdir=Path("repo"), workspace_root=Path("workspace")),
             unity=SimpleNamespace(builds=[macos, windows]),
             steam=Mock(),
-            versioning=SimpleNamespace(version_file="version.txt", auto_increment=False),
+            versioning=SimpleNamespace(
+                version_file="version.txt",
+                auto_increment=True,
+                bump_part="patch",
+                append_short_commit_hash=True,
+                short_commit_hash_length=7,
+            ),
             logging=SimpleNamespace(
                 log_dir=Path("logs"),
                 level="INFO",
@@ -143,6 +238,7 @@ class MultiTargetRunTests(TestCase):
         state = SimpleNamespace(
             last_built_sha="old-sha",
             last_version=None,
+            last_branch=None,
             last_status=None,
             last_run_at=None,
             save=Mock(),
@@ -155,16 +251,98 @@ class MultiTargetRunTests(TestCase):
         self.assertEqual(0, result)
         self.assertEqual(
             [
-                call(config.unity, macos, config.git.workdir, "1.2.3"),
+                call(config.unity, macos, config.git.workdir, "1.2.4.abcdef1"),
             ],
             build_mock.call_args_list,
         )
+        write_version_mock.assert_called_once_with(
+            config.git.workdir / "version.txt", "1.2.4"
+        )
+        self.assertEqual("1.2.4.abcdef1", state.last_version)
+        self.assertEqual("abcdef123456", state.last_built_sha)
+        self.assertEqual("main", state.last_branch)
         upload_mock.assert_called_once_with(
             config.steam,
             {"macos": Path("build/macos")},
             config.git.workdir,
+            build_metadata={
+                "version": "1.2.4.abcdef1",
+                "branch": "main",
+                "short_sha": "abcdef1",
+                "targets": "macos",
+            },
+        )
+        logger = setup_logging_mock.return_value
+        logger.info.assert_any_call("Git check started (branch=%s)", "main")
+        logger.info.assert_any_call("Git check finished (new_commit=%s)", True)
+        logger.info.assert_any_call("Workspace sync started")
+        logger.info.assert_any_call("Workspace sync finished")
+        logger.info.assert_any_call("Run finished successfully: version=%s sha=%s", "1.2.4.abcdef1", "abcdef123456")
+        logger.exception.assert_not_called()
+
+    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
+    @patch("unity_build_bot.cli.State.load")
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.unity_builder.build", side_effect=RuntimeError("build broke"))
+    @patch("unity_build_bot.cli.version_file.read_version", return_value="2.0.0")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="1234567890abcdef")
+    @patch("unity_build_bot.cli.load_config")
+    def test_failed_build_records_generated_version_sha_and_branch(
+        self,
+        load_config_mock,
+        has_new_commit_mock,
+        _sync_workdir_mock,
+        _read_version_mock,
+        _build_mock,
+        setup_logging_mock,
+        state_load_mock,
+        _remove_workspace_mock,
+    ):
+        config = SimpleNamespace(
+            git=SimpleNamespace(branch="develop", workdir=Path("repo"), workspace_root=Path("workspace")),
+            unity=SimpleNamespace(builds=[
+                SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True),
+            ]),
+            steam=Mock(),
+            versioning=SimpleNamespace(
+                version_file="version.txt",
+                auto_increment=False,
+                bump_part="patch",
+                append_short_commit_hash=True,
+                short_commit_hash_length=7,
+            ),
+            logging=SimpleNamespace(
+                log_dir=Path("logs"), level="INFO", show_activity_window=False
+            ),
+            state=SimpleNamespace(state_file=Path("state.json")),
+            job=SimpleNamespace(mode="build_and_upload"),
+        )
+        state = SimpleNamespace(
+            last_built_sha="old-sha",
+            last_version="1.9.0.oldhash",
+            last_branch="develop",
+            last_status="failed: previous failure",
+            last_run_at=None,
+            save=Mock(),
+        )
+        load_config_mock.return_value = config
+        state_load_mock.return_value = state
+
+        result = cli.run("config.yaml")
+
+        self.assertEqual(1, result)
+        has_new_commit_mock.assert_called_once_with(config.git, None)
+        self.assertEqual("1234567890abcdef", state.last_built_sha)
+        self.assertEqual("2.0.0.1234567", state.last_version)
+        self.assertEqual("develop", state.last_branch)
+        self.assertEqual("failed: build broke", state.last_status)
+        state.save.assert_called_once_with(config.state.state_file)
+        setup_logging_mock.return_value.exception.assert_any_call(
+            "%s failed; run aborted: %s", "Unity build macos", _build_mock.side_effect
         )
 
+    @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.steam_uploader.upload")
     @patch("unity_build_bot.cli.unity_builder.build")
@@ -178,7 +356,8 @@ class MultiTargetRunTests(TestCase):
         sync_workdir_mock,
         build_mock,
         upload_mock,
-        _setup_logging_mock,
+        setup_logging_mock,
+        state_load_mock,
     ):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -186,7 +365,7 @@ class MultiTargetRunTests(TestCase):
             macos_output.mkdir(parents=True)
             windows_output = root / "build/windows"
             config = SimpleNamespace(
-                git=SimpleNamespace(workdir=root / "repo"),
+                git=SimpleNamespace(branch="develop", workdir=root / "repo"),
                 unity=SimpleNamespace(builds=[
                     SimpleNamespace(id="macos", output_subdir=macos_output, enabled=True),
                     SimpleNamespace(id="windows", output_subdir=windows_output, enabled=False),
@@ -197,6 +376,13 @@ class MultiTargetRunTests(TestCase):
                     level="INFO",
                     show_activity_window=False,
                 ),
+                state=SimpleNamespace(state_file=root / "state.json"),
+                versioning=SimpleNamespace(short_commit_hash_length=7),
+            )
+            state_load_mock.return_value = SimpleNamespace(
+                last_built_sha="abcdef123456",
+                last_version="1.2.3.abcdef1",
+                last_branch="develop",
             )
             load_config_mock.return_value = config
 
@@ -210,6 +396,15 @@ class MultiTargetRunTests(TestCase):
             config.steam,
             {"macos": macos_output},
             config.git.workdir,
+            build_metadata={
+                "version": "1.2.3.abcdef1",
+                "branch": "develop",
+                "short_sha": "abcdef1",
+                "targets": "macos",
+            },
+        )
+        setup_logging_mock.return_value.info.assert_any_call(
+            "Upload context (branch=%s, sha=%s)", "develop", "abcdef123456"
         )
 
     @patch("unity_build_bot.cli.State.load")
@@ -239,7 +434,11 @@ class MultiTargetRunTests(TestCase):
                     SimpleNamespace(id="macos", output_subdir=macos_output, enabled=True),
                 ]),
                 steam=Mock(),
-                versioning=SimpleNamespace(version_file="version.txt", auto_increment=False),
+                versioning=SimpleNamespace(
+                    version_file="version.txt",
+                    auto_increment=False,
+                    short_commit_hash_length=7,
+                ),
                 logging=SimpleNamespace(
                     log_dir=root / "logs",
                     level="INFO",
@@ -251,6 +450,7 @@ class MultiTargetRunTests(TestCase):
             state = SimpleNamespace(
                 last_built_sha="old-sha",
                 last_version=None,
+                last_branch="main",
                 last_status=None,
                 last_run_at=None,
                 save=Mock(),
@@ -269,8 +469,15 @@ class MultiTargetRunTests(TestCase):
             config.steam,
             {"macos": macos_output},
             config.git.workdir,
+            build_metadata={
+                "version": "unknown",
+                "branch": "main",
+                "short_sha": "old-sha",
+                "targets": "macos",
+            },
         )
 
+    @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.steam_uploader.upload")
     @patch("unity_build_bot.cli.load_config")
@@ -279,6 +486,7 @@ class MultiTargetRunTests(TestCase):
         load_config_mock,
         upload_mock,
         _setup_logging_mock,
+        state_load_mock,
     ):
         config = SimpleNamespace(
             git=SimpleNamespace(workdir=Path("repo")),
@@ -291,8 +499,10 @@ class MultiTargetRunTests(TestCase):
                 level="INFO",
                 show_activity_window=False,
             ),
+            state=SimpleNamespace(state_file=Path("state.json")),
         )
         load_config_mock.return_value = config
+        state_load_mock.return_value = SimpleNamespace()
 
         result = cli.upload("config.yaml")
 
@@ -301,6 +511,22 @@ class MultiTargetRunTests(TestCase):
 
 
 class MultiDepotVdfTests(TestCase):
+    def test_renders_build_description_metadata(self):
+        description = _render_build_description(
+            "{version} | {branch} | {short_sha} | {targets} | automated",
+            {
+                "version": "1.2.3.abcdef1",
+                "branch": "develop",
+                "short_sha": "abcdef1",
+                "targets": "macos,windows",
+            },
+        )
+
+        self.assertEqual(
+            "1.2.3.abcdef1 | develop | abcdef1 | macos,windows | automated",
+            description,
+        )
+
     def test_app_build_references_every_depot(self):
         steam_config = SteamConfig(
             steamcmd_path=Path("steamcmd"),

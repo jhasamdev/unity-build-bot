@@ -5,10 +5,60 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from unity_build_bot.config import GitConfig
-from unity_build_bot.git_watcher import _clear_workspace, sync_workdir
+from unity_build_bot.git_watcher import (
+    _clear_workspace,
+    remote_head_sha,
+    remove_workspace,
+    sync_workdir,
+)
 
 
 class SyncWorkdirTests(TestCase):
+    def test_refuses_workspace_that_contains_project_directory(self):
+        workspace_root = Path(__file__).resolve().parents[2]
+        config = GitConfig(
+            "git@example/repo.git",
+            "main",
+            workspace_root / "workspace" / "repo",
+            workspace_root,
+        )
+
+        with patch("unity_build_bot.git_watcher._run") as run_mock:
+            with self.assertRaisesRegex(RuntimeError, "protected directory"):
+                sync_workdir(config)
+
+        run_mock.assert_not_called()
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_https_token_is_passed_in_git_environment(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "abc123\trefs/heads/main\n", "")
+        config = GitConfig(
+            "https://github.com/example/repo.git",
+            "main",
+            Path("workspace/repo"),
+            Path("workspace"),
+            auth_token_env="GIT_TOKEN",
+            auth_token="secret-token",
+        )
+
+        with patch("unity_build_bot.git_watcher.logger.info") as info_mock:
+            sha = remote_head_sha(config)
+
+        self.assertEqual("abc123", sha)
+        info_mock.assert_called_once_with("Git remote head (branch=%s, sha=%s)", "main", "abc123")
+        args, kwargs = run_mock.call_args
+        self.assertNotIn("secret-token", " ".join(args[0]))
+        self.assertIn("AUTHORIZATION: basic ", kwargs["env"]["GIT_CONFIG_VALUE_0"])
+        self.assertEqual("0", kwargs["env"]["GIT_TERMINAL_PROMPT"])
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_git_failure_includes_combined_command_output(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 128, "authentication failed", "")
+        config = GitConfig("git@example/repo.git", "main", Path("repo"), Path("workspace"))
+
+        with self.assertRaisesRegex(RuntimeError, "git ls-remote failed: authentication failed"):
+            remote_head_sha(config)
+
     def test_detaches_workspace_before_recursive_delete(self):
         with TemporaryDirectory() as temp_dir:
             workspace_root = Path(temp_dir) / "workspace"
@@ -23,6 +73,16 @@ class SyncWorkdirTests(TestCase):
             self.assertTrue(workspace_root.is_dir())
             self.assertFalse(any(workspace_root.iterdir()))
             self.assertTrue((cleanup_root / ".DS_Store").is_file())
+
+    def test_removes_workspace_after_run(self):
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            (workspace_root / "repo").mkdir(parents=True)
+            (workspace_root / "repo" / "build.txt").write_text("build")
+
+            remove_workspace(workspace_root)
+
+            self.assertFalse(workspace_root.exists())
 
     @patch("unity_build_bot.git_watcher._run")
     def test_clears_existing_directory_before_clone(self, run_mock):

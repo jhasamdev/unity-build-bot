@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Installs a macOS launchd agent that polls every N seconds.
 # Usage: ./schedule_macos_launchd.sh /path/to/unity-build-bot 300
+# Remove: ./schedule_macos_launchd.sh --uninstall
 set -euo pipefail
 
-TOOL_PATH="${1:?Usage: $0 <tool_path> <interval_seconds>}"
-INTERVAL="${2:-300}"
-PYTHON_PATH="${TOOL_PATH}/.venv/bin/python"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/com.unitybuildbot.run.plist"
+
+if [[ "${1:-}" == "--uninstall" ]]; then
+    if [[ -f "${PLIST_PATH}" ]]; then
+        launchctl unload "${PLIST_PATH}" 2>/dev/null || true
+        rm "${PLIST_PATH}"
+        echo "Removed launchd agent com.unitybuildbot.run."
+    else
+        echo "launchd agent com.unitybuildbot.run is not installed."
+    fi
+    exit 0
+fi
+
+TOOL_PATH="${1:?Usage: $0 <tool_path> <interval_seconds> | --uninstall}"
+INTERVAL="${2:-300}"
+PYTHON_PATH="${TOOL_PATH}/.venv/bin/python"
 
 if [[ ! -x "${PYTHON_PATH}" ]]; then
     echo "Python virtual environment not found at ${PYTHON_PATH}. Run the Python setup first." >&2

@@ -8,6 +8,24 @@ from unity_build_bot.logging_utils import setup_logging
 
 class LoggingSetupTests(TestCase):
     @patch("unity_build_bot.logging_utils.open_activity_window")
+    def test_redacts_credentials_in_log_file(self, _open_window_mock):
+        with TemporaryDirectory() as temp_dir:
+            logger = setup_logging(Path(temp_dir), "DEBUG", secrets=("real-token",))
+            try:
+                logger.error(
+                    "git failed: token=%s Authorization: Basic abc123 https://user:pass@example.com",
+                    "real-token",
+                )
+                contents = next(Path(temp_dir).glob("run-*.log")).read_text()
+                for secret in ("real-token", "abc123", "user:pass"):
+                    self.assertNotIn(secret, contents)
+                self.assertIn("****", contents)
+            finally:
+                for handler in logger.handlers[:]:
+                    handler.close()
+                    logger.removeHandler(handler)
+
+    @patch("unity_build_bot.logging_utils.open_activity_window")
     def test_opens_activity_window_when_enabled(self, open_window_mock):
         with TemporaryDirectory() as temp_dir:
             logger = setup_logging(Path(temp_dir), show_activity_window=True)

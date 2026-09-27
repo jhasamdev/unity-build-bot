@@ -42,7 +42,6 @@ def build(
         build_cfg.build_target,
         version,
     )
-    logger.debug("Unity command: %s", " ".join(cmd))
     result = run_streaming(cmd, output_file=editor_log)
 
     if result.returncode != 0:

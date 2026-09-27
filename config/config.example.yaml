@@ -1,3 +1,4 @@
+# macOS starter config. Windows users: copy config.example.windows.yaml instead.
 # Copy to config.yaml and fill in real values. config.yaml is gitignored.
 # Secrets (passwords/tokens) are NOT stored here — see secrets.example.yaml
 # and the ${ENV_VAR} placeholders below, which are resolved from the
@@ -26,7 +27,7 @@ unity:
       output_subdir: "workspace/build/macos"
       build_name: "Game"               # output filename, without .app
     - id: "windows"
-      enabled: true                     # false to skip Windows
+      enabled: false                    # enable only if building both platforms
       build_target: "StandaloneWindows64"
       output_subdir: "workspace/build/windows"
       build_name: "Game"               # output filename, without .exe
@@ -35,9 +36,13 @@ versioning:
   version_file: "version.txt"          # relative to repo workdir root
   auto_increment: true
   bump_part: "patch"                   # patch | minor | major
+  append_short_commit_hash: true        # append .<short SHA> to each build version
+  short_commit_hash_length: 7
 
 job:
   mode: "build_and_upload"             # build_and_upload | upload_only
+  steam_upload_retries: 3               # additional attempts after a failed upload
+  steam_upload_retry_delay_seconds: 30
 
 steam:
   # Windows: C:/steamcmd/steamcmd.exe and C:/steamcmd/config/config.vdf
@@ -47,9 +52,8 @@ steam:
   app_id: "123456"
   depots:                              # keys must match unity.builds IDs
     macos: "123457"
-    windows: "123458"
   set_live_branch: ""                  # leave empty to upload without setting a branch live
-  build_description: ""                # empty = auto timestamp
+  build_description: "{version} | {branch} | {short_sha} | {targets} | automated"
 
 logging:
   log_dir: "~/.unity-build-bot/logs"   # kept outside any git repo on purpose

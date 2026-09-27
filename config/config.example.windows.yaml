@@ -1,0 +1,53 @@
+# Windows starter config. macOS users: copy config.example.macos.yaml instead.
+# Copy to config.yaml and fill in real values. config.yaml is gitignored.
+# Secrets (passwords/tokens) belong in secrets.yaml or the environment.
+
+git:
+  repo_url: "git@github.com:youraccount/your-unity-project.git"
+  branch: "main"
+  workspace_root: "./workspace"
+  workdir: "./workspace/repo"
+  # Only used for HTTPS remotes. The value is read from the environment or secrets.yaml.
+  auth_token_env: "GIT_TOKEN"
+
+unity:
+  executable_path: "C:/Program Files/Unity/Hub/Editor/2022.3.40f1/Editor/Unity.exe"
+  project_subpath: "."
+  build_method: "BuildScript.PerformBuild"
+  extra_args: []
+  builds:
+    - id: "windows"
+      enabled: true
+      build_target: "StandaloneWindows64"
+      output_subdir: "workspace/build/windows"
+      build_name: "Game"
+
+versioning:
+  version_file: "version.txt"
+  auto_increment: true
+  bump_part: "patch"
+  append_short_commit_hash: true
+  short_commit_hash_length: 7
+
+job:
+  mode: "build_and_upload"
+  steam_upload_retries: 3
+  steam_upload_retry_delay_seconds: 30
+
+steam:
+  steamcmd_path: "C:/steamcmd/steamcmd.exe"
+  config_vdf_path: "C:/steamcmd/config/config.vdf"
+  username: "your-steam-builder-account"
+  app_id: "123456"
+  depots:
+    windows: "123458"
+  set_live_branch: ""
+  build_description: "{version} | {branch} | {short_sha} | {targets} | automated"
+
+logging:
+  log_dir: "~/.unity-build-bot/logs"
+  level: "INFO"
+  show_activity_window: false
+
+state:
+  state_file: "~/.unity-build-bot/state.json"

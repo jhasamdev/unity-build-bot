@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from unity_build_bot import git_watcher, steam_uploader, unity_builder, version_file
 from unity_build_bot.config import load_config
 from unity_build_bot.logging_utils import setup_logging
+from unity_build_bot.run_lock import RunLock
 from unity_build_bot.state import State
 
 
@@ -38,80 +41,192 @@ def _validate_content_roots(content_roots: dict[str, Path]) -> None:
 
 def run(config_path: str) -> int:
     cfg = load_config(config_path)
+    git_token = getattr(cfg.git, "auth_token", None)
     logger = setup_logging(
         cfg.logging.log_dir,
         cfg.logging.level,
         cfg.logging.show_activity_window,
+        secrets=(git_token,) if git_token else (),
     )
-    state = State.load(cfg.state.state_file)
-
-    try:
-        if cfg.job.mode == "upload_only":
-            logger.info("Job mode is upload_only; skipping Git sync and Unity build")
-            return upload_existing_outputs(cfg, logger)
-
-        new_sha = git_watcher.has_new_commit(cfg.git, state.last_built_sha)
-        if new_sha is None:
-            logger.info("No new commits on %s, nothing to do.", cfg.git.branch)
-            return 0
-
-        logger.info("New commit detected: %s (previous: %s)", new_sha, state.last_built_sha)
-        git_watcher.sync_workdir(cfg.git)
-
-        version_path = cfg.git.workdir / cfg.versioning.version_file
-        version = version_file.read_version(version_path)
-        if cfg.versioning.auto_increment:
-            version = version_file.bump_version(version, cfg.versioning.bump_part)
-        logger.info("Building version %s", version)
-
-        content_roots = {}
-        for build_cfg in cfg.unity.builds:
-            if not build_cfg.enabled:
-                logger.info("Skipping disabled build %s", build_cfg.id)
-                continue
-            unity_builder.build(cfg.unity, build_cfg, cfg.git.workdir, version)
-            content_roots[build_cfg.id] = build_cfg.output_subdir
-        steam_uploader.upload(cfg.steam, content_roots, cfg.git.workdir)
-
-        if cfg.versioning.auto_increment:
-            version_file.write_version(version_path, version)
-
-        state.last_built_sha = new_sha
-        state.last_version = version
-        state.last_status = "success"
-        state.last_run_at = datetime.now(timezone.utc).isoformat()
-        state.save(cfg.state.state_file)
-        logger.info("Run complete: version=%s sha=%s", version, new_sha)
+    run_lock = RunLock(cfg.state.state_file.parent / ".run.lock")
+    if not run_lock.acquire():
+        logger.warning("Another bot run is active; skipping this scheduled run")
         return 0
 
-    except Exception as exc:  # noqa: BLE001 - top-level job boundary
-        logger.exception("Run failed: %s", exc)
-        state.last_status = f"failed: {exc}"
-        state.last_run_at = datetime.now(timezone.utc).isoformat()
-        state.save(cfg.state.state_file)
-        return 1
+    try:
+        logger.info("Run started (mode=%s, branch=%s)", cfg.job.mode, cfg.git.branch)
+        stage = "State load"
+        try:
+            state = State.load(cfg.state.state_file)
+            if cfg.job.mode == "upload_only":
+                stage = "Upload-only run"
+                logger.info("Job mode is upload_only; skipping Git sync and Unity build")
+                return upload_existing_outputs(cfg, logger, state)
+
+            stage = "Git check"
+            comparison_sha = state.last_built_sha
+            if state.last_status and state.last_status.startswith("failed:"):
+                comparison_sha = None
+            if getattr(state, "last_branch", None) not in {None, cfg.git.branch}:
+                comparison_sha = None
+
+            logger.info("Git check started (branch=%s)", cfg.git.branch)
+            new_sha = git_watcher.has_new_commit(cfg.git, comparison_sha)
+            logger.info("Git check finished (new_commit=%s)", new_sha is not None)
+            if new_sha is None:
+                logger.info("Run finished: no new commits on %s", cfg.git.branch)
+                return 0
+
+            logger.info(
+                "New commit detected: %s (previous: %s)",
+                new_sha,
+                state.last_built_sha,
+            )
+            state.last_built_sha = new_sha
+            state.last_branch = cfg.git.branch
+            stage = "Workspace sync"
+            logger.info("Workspace sync started")
+            git_watcher.sync_workdir(cfg.git)
+            logger.info("Workspace sync finished")
+
+            stage = "Version preparation"
+            logger.info("Version preparation started")
+            version_path = cfg.git.workdir / cfg.versioning.version_file
+            base_version = version_file.read_version(version_path)
+            if cfg.versioning.auto_increment:
+                base_version = version_file.bump_version(
+                    base_version, cfg.versioning.bump_part
+                )
+            version = base_version
+            if cfg.versioning.append_short_commit_hash:
+                version = version_file.append_short_commit_hash(
+                    base_version,
+                    new_sha,
+                    cfg.versioning.short_commit_hash_length,
+                )
+            state.last_version = version
+            logger.info("Version preparation finished (version=%s)", version)
+
+            content_roots = {}
+            for build_cfg in cfg.unity.builds:
+                if not build_cfg.enabled:
+                    logger.debug("Skipping disabled build %s", build_cfg.id)
+                    continue
+                stage = f"Unity build {build_cfg.id}"
+                unity_builder.build(cfg.unity, build_cfg, cfg.git.workdir, version)
+                content_roots[build_cfg.id] = build_cfg.output_subdir
+            stage = "Steam upload"
+            _upload_with_retries(
+                cfg,
+                logger,
+                content_roots,
+                cfg.git.workdir,
+                build_metadata={
+                    "version": version,
+                    "branch": cfg.git.branch,
+                    "short_sha": new_sha[:cfg.versioning.short_commit_hash_length],
+                    "targets": ",".join(content_roots),
+                },
+            )
+
+            if cfg.versioning.auto_increment:
+                stage = "Version file update"
+                logger.info("Version file update started")
+                version_file.write_version(version_path, base_version)
+                logger.info("Version file update finished")
+
+            stage = "State save"
+            state.last_status = "success"
+            state.last_run_at = datetime.now(timezone.utc).isoformat()
+            state.save(cfg.state.state_file)
+            logger.info("Run finished successfully: version=%s sha=%s", version, new_sha)
+            return 0
+
+        except Exception as exc:  # noqa: BLE001 - top-level job boundary
+            logger.exception("%s failed; run aborted: %s", stage, exc)
+            state.last_status = f"failed: {exc}"
+            state.last_run_at = datetime.now(timezone.utc).isoformat()
+            state.save(cfg.state.state_file)
+            return 1
+        finally:
+            try:
+                logger.info("Workspace cleanup started")
+                git_watcher.remove_workspace(cfg.git.workspace_root)
+                logger.info("Workspace cleanup finished: %s", cfg.git.workspace_root)
+            except Exception as exc:  # noqa: BLE001 - cleanup must not hide run result
+                logger.exception("Workspace cleanup failed: %s", exc)
+    finally:
+        run_lock.release()
+
+
+def _upload_with_retries(cfg, logger, content_roots, workdir, build_metadata):
+    job = getattr(cfg, "job", None)
+    attempts = getattr(job, "steam_upload_retries", 3) + 1
+    delay = getattr(job, "steam_upload_retry_delay_seconds", 30)
+    for attempt in range(1, attempts + 1):
+        try:
+            return steam_uploader.upload(
+                cfg.steam, content_roots, workdir, build_metadata=build_metadata
+            )
+        except Exception as exc:
+            if attempt == attempts:
+                raise
+            logger.warning(
+                "Steam upload attempt %s/%s failed (%s); retrying in %ss",
+                attempt,
+                attempts,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
 
 
 def upload(config_path: str) -> int:
     cfg = load_config(config_path)
+    git_token = getattr(cfg.git, "auth_token", None)
     logger = setup_logging(
         cfg.logging.log_dir,
         cfg.logging.level,
         cfg.logging.show_activity_window,
+        secrets=(git_token,) if git_token else (),
     )
 
     try:
-        return upload_existing_outputs(cfg, logger)
+        logger.info("Upload-only run started")
+        state = State.load(cfg.state.state_file)
+        return upload_existing_outputs(cfg, logger, state)
     except Exception as exc:  # noqa: BLE001 - top-level job boundary
         logger.exception("Upload-only run failed: %s", exc)
         return 1
 
 
-def upload_existing_outputs(cfg, logger: logging.Logger) -> int:
+def upload_existing_outputs(cfg, logger: logging.Logger, state: State | None = None) -> int:
     content_roots = _content_roots_from_enabled_builds(cfg)
+    logger.info(
+        "Upload context (branch=%s, sha=%s)",
+        state.last_branch if state and state.last_branch else cfg.git.branch,
+        state.last_built_sha if state and state.last_built_sha else "<unknown>",
+    )
+    logger.info("Build output validation started")
     _validate_content_roots(content_roots)
+    logger.info("Build output validation finished")
     logger.info("Uploading existing build outputs without running Unity")
-    steam_uploader.upload(cfg.steam, content_roots, cfg.git.workdir)
+    commit_sha = state.last_built_sha if state else None
+    _upload_with_retries(
+        cfg,
+        logger,
+        content_roots,
+        cfg.git.workdir,
+        build_metadata={
+            "version": state.last_version if state and state.last_version else "unknown",
+            "branch": state.last_branch if state and state.last_branch else cfg.git.branch,
+            "short_sha": (
+                commit_sha[:cfg.versioning.short_commit_hash_length]
+                if commit_sha else "unknown"
+            ),
+            "targets": ",".join(content_roots),
+        },
+    )
     logger.info("Upload-only run complete")
     return 0
 
@@ -121,8 +236,71 @@ def status(config_path: str) -> int:
     state = State.load(cfg.state.state_file)
     print(f"last_built_sha: {state.last_built_sha}")
     print(f"last_version:   {state.last_version}")
+    print(f"last_branch:    {state.last_branch}")
     print(f"last_status:    {state.last_status}")
     print(f"last_run_at:    {state.last_run_at}")
+    return 0
+
+
+def doctor(config_path: str) -> int:
+    try:
+        cfg = load_config(config_path)
+    except (OSError, ValueError) as exc:
+        print(f"[FAIL] Configuration: {exc}")
+        return 1
+
+    failed = False
+
+    def report(label: str, ok: bool, detail: str = "") -> None:
+        nonlocal failed
+        failed |= not ok
+        state = "OK" if ok else "FAIL"
+        suffix = f" ({detail})" if detail else ""
+        print(f"[{state}] {label}{suffix}")
+
+    try:
+        git_watcher.validate_workspace_root(cfg.git.workspace_root)
+    except RuntimeError as exc:
+        report("Workspace cleanup target", False, str(exc))
+    else:
+        report("Workspace cleanup target", True, str(cfg.git.workspace_root))
+
+    if cfg.job.mode != "upload_only":
+        git_path = shutil.which("git")
+        report("Git executable", git_path is not None, git_path or "not found on PATH")
+        if git_path:
+            try:
+                git_watcher.remote_head_sha(cfg.git)
+            except (OSError, RuntimeError) as exc:
+                report("Git remote", False, str(exc))
+            else:
+                report("Git remote", True, f"{cfg.git.repo_url} ({cfg.git.branch})")
+        report(
+            "Unity Editor",
+            cfg.unity.executable_path.is_file(),
+            str(cfg.unity.executable_path),
+        )
+
+    report("SteamCMD", cfg.steam.steamcmd_path.is_file(), str(cfg.steam.steamcmd_path))
+    report(
+        "Steam login session",
+        cfg.steam.config_vdf_path.is_file(),
+        str(cfg.steam.config_vdf_path),
+    )
+
+    if cfg.job.mode == "upload_only":
+        for build_cfg in cfg.unity.builds:
+            if build_cfg.enabled:
+                report(
+                    f"Build output {build_cfg.id}",
+                    build_cfg.output_subdir.is_dir(),
+                    str(build_cfg.output_subdir),
+                )
+
+    if failed:
+        print("Setup checks failed. Fix the items marked FAIL and run doctor again.")
+        return 1
+    print("Setup checks passed.")
     return 0
 
 
@@ -135,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run", help="Check for a new commit and build/upload if found", parents=[common])
     sub.add_parser("upload", help="Upload existing build outputs without syncing or building", parents=[common])
     sub.add_parser("status", help="Print last recorded run state", parents=[common])
+    sub.add_parser("doctor", help="Check configuration and required setup", parents=[common])
 
     args = parser.parse_args(argv)
 
@@ -144,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
         return upload(args.config)
     if args.command == "status":
         return status(args.config)
+    if args.command == "doctor":
+        return doctor(args.config)
 
     logging.getLogger("unity_build_bot").error("Unknown command: %s", args.command)
     return 2
