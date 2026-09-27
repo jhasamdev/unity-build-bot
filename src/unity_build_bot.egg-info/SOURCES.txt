@@ -2,10 +2,13 @@ README.md
 pyproject.toml
 src/unity_build_bot/__init__.py
 src/unity_build_bot/__main__.py
+src/unity_build_bot/activity_window.py
 src/unity_build_bot/cli.py
 src/unity_build_bot/config.py
 src/unity_build_bot/git_watcher.py
 src/unity_build_bot/logging_utils.py
+src/unity_build_bot/process_runner.py
+src/unity_build_bot/run_lock.py
 src/unity_build_bot/state.py
 src/unity_build_bot/steam_uploader.py
 src/unity_build_bot/unity_builder.py
@@ -16,3 +19,11 @@ src/unity_build_bot.egg-info/dependency_links.txt
 src/unity_build_bot.egg-info/entry_points.txt
 src/unity_build_bot.egg-info/requires.txt
 src/unity_build_bot.egg-info/top_level.txt
+tests/test_cli.py
+tests/test_git_watcher.py
+tests/test_logging_utils.py
+tests/test_multi_target.py
+tests/test_process_runner.py
+tests/test_run_lock.py
+tests/test_state.py
+tests/test_upload_retry.py
