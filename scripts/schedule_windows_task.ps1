@@ -4,25 +4,50 @@
 
 param(
     [string]$ToolPath = "$PSScriptRoot\..",
-    [string]$ConfigPath = "$PSScriptRoot\..\config\config.yaml",
-    [string]$PythonPath = "$PSScriptRoot\..\.venv\Scripts\python.exe",
+    [string]$ConfigPath = "config\config.yaml",
+    [string]$PythonPath,
     [int]$IntervalMinutes = 5,
     [switch]$Uninstall
 )
 
+$ToolPath = [System.IO.Path]::GetFullPath($ToolPath)
+if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path $ToolPath $ConfigPath
+}
+$ConfigPath = [System.IO.Path]::GetFullPath($ConfigPath)
+$DefaultConfigPath = [System.IO.Path]::GetFullPath((Join-Path $ToolPath "config\config.yaml"))
+$TaskName = "UnityBuildBot"
+if (-not [string]::Equals($ConfigPath, $DefaultConfigPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $ConfigName = [System.IO.Path]::GetFileNameWithoutExtension($ConfigPath) -replace '[^A-Za-z0-9]', '-'
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $HashBytes = $Hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ConfigPath.ToLowerInvariant()))
+    } finally {
+        $Hasher.Dispose()
+    }
+    $ConfigHash = [System.BitConverter]::ToString($HashBytes).Replace('-', '').Substring(0, 8).ToLowerInvariant()
+    $TaskName = "UnityBuildBot-$ConfigName-$ConfigHash"
+}
+
 if ($Uninstall) {
-    $task = Get-ScheduledTask -TaskName "UnityBuildBot" -ErrorAction SilentlyContinue
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($null -ne $task) {
-        Unregister-ScheduledTask -TaskName "UnityBuildBot" -Confirm:$false
-        Write-Host "Removed scheduled task 'UnityBuildBot'."
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        Write-Host "Removed scheduled task '$TaskName'."
     } else {
-        Write-Host "Scheduled task 'UnityBuildBot' is not installed."
+        Write-Host "Scheduled task '$TaskName' is not installed."
     }
     exit 0
 }
 
+if (-not $PythonPath) {
+    $PythonPath = Join-Path $ToolPath ".venv\Scripts\python.exe"
+}
 if (-not (Test-Path -Path $PythonPath -PathType Leaf)) {
     throw "Python virtual environment not found at '$PythonPath'. Run the Python setup first."
+}
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    throw "Config file not found at '$ConfigPath'."
 }
 
 $action = New-ScheduledTaskAction -Execute $PythonPath `
@@ -32,6 +57,6 @@ $action = New-ScheduledTaskAction -Execute $PythonPath `
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
 
-Register-ScheduledTask -TaskName "UnityBuildBot" -Action $action -Trigger $trigger -Force
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Force
 
-Write-Host "Registered scheduled task 'UnityBuildBot' running every $IntervalMinutes minute(s)."
+Write-Host "Registered scheduled task '$TaskName' for '$ConfigPath' running every $IntervalMinutes minute(s)."

@@ -135,6 +135,15 @@ Activation is optional because the commands below invoke `.venv` directly.
   ./scripts/schedule_macos_launchd.sh --uninstall
   ```
 
+  To run another config at the same time, supply its path as the third
+  argument; omit it to use `config/config.yaml`. Remove only that job by
+  specifying the same path:
+
+  ```bash
+  ./scripts/schedule_macos_launchd.sh "$(pwd)" 300 config/config.macos-extra.yaml
+  ./scripts/schedule_macos_launchd.sh --uninstall "$(pwd)" config/config.macos-extra.yaml
+  ```
+
 #### Windows PowerShell
 
 1. Verify Python is available and is version 3.10 or newer:
@@ -196,6 +205,19 @@ Activation is optional because the commands below invoke `.venv` directly.
   ```powershell
   powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1 -Uninstall
   ```
+
+  To run another config at the same time, pass `-ConfigPath`; omit it to use
+  `config/config.yaml`. Remove only that job with the same path:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1 -ConfigPath config\config.windows-extra.yaml
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_windows_task.ps1 -Uninstall -ConfigPath config\config.windows-extra.yaml
+  ```
+
+Each config path has a separate scheduler entry; the generic config keeps its
+original job name. To run multiple bots concurrently, assign each config its
+own `git.workspace_root`, build output directories, `logging.log_dir`, and
+`state.state_file` parent directory (which also holds the run lock).
 
 Both scheduler scripts use the Python interpreter inside `.venv`. Do not
 delete or move `.venv` after installing the scheduled job; recreate the job
