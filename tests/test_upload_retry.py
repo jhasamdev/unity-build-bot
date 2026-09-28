@@ -4,11 +4,18 @@ from unittest import TestCase
 from unittest.mock import ANY, Mock, patch
 
 from unity_build_bot import cli
+from unity_build_bot.steam_uploader import UploadResult
 
 
 class UploadRetryTests(TestCase):
     @patch("unity_build_bot.cli.time.sleep")
-    @patch("unity_build_bot.cli.steam_uploader.upload", side_effect=[RuntimeError("timeout"), None])
+    @patch(
+        "unity_build_bot.cli.steam_uploader.upload",
+        side_effect=[
+            RuntimeError("timeout"),
+            UploadResult(build_id="25520824", description="test build", log_path=Path("steamcmd.log")),
+        ],
+    )
     def test_retries_failed_upload(self, upload_mock, sleep_mock):
         config = SimpleNamespace(
             steam=Mock(),

@@ -9,6 +9,7 @@ import yaml
 from unity_build_bot import cli
 from unity_build_bot.config import SteamConfig, load_config
 from unity_build_bot.steam_uploader import (
+    UploadResult,
     _render_build_description,
     _successful_build_id,
     _write_vdfs,
@@ -150,6 +151,52 @@ class MultiTargetConfigTests(TestCase):
 
         self.assertEqual("upload_only", config.job.mode)
 
+    def test_notifications_load_smtp_settings_from_secrets(self):
+        data = _config_data()
+        data["notifications"] = {
+            "enabled": True,
+            "from_address": "bot@example.com",
+            "recipients": ["dev1@example.com", "dev2@example.com"],
+            "machine_label": "Mac mini M2 / 16 GB",
+            "smtp": {
+                "host": "smtp.example.com",
+                "port": 465,
+                "username": "bot@example.com",
+                "password_env": "SMTP_PASSWORD",
+                "use_ssl": True,
+                "use_starttls": False,
+            },
+        }
+
+        config = self._load(data, {"SMTP_PASSWORD": "super-secret"})
+
+        self.assertTrue(config.notifications.enabled)
+        self.assertEqual("bot@example.com", config.notifications.from_address)
+        self.assertEqual(["dev1@example.com", "dev2@example.com"], config.notifications.recipients)
+        self.assertEqual("Mac mini M2 / 16 GB", config.notifications.machine_label)
+        self.assertEqual("smtp.example.com", config.notifications.smtp.host)
+        self.assertEqual(465, config.notifications.smtp.port)
+        self.assertEqual("bot@example.com", config.notifications.smtp.username)
+        self.assertEqual("SMTP_PASSWORD", config.notifications.smtp.password_env)
+        self.assertEqual("super-secret", config.notifications.smtp.password)
+        self.assertTrue(config.notifications.smtp.use_ssl)
+        self.assertFalse(config.notifications.smtp.use_starttls)
+
+    def test_notifications_require_configured_password_when_enabled(self):
+        data = _config_data()
+        data["notifications"] = {
+            "enabled": True,
+            "from_address": "bot@example.com",
+            "recipients": ["dev@example.com"],
+            "smtp": {
+                "host": "smtp.example.com",
+                "password_env": "UNITY_BUILD_BOT_SMTP_PASSWORD",
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "UNITY_BUILD_BOT_SMTP_PASSWORD"):
+            self._load(data)
+
     def test_multi_target_config_supports_enabled_selection(self):
         data = _config_data()
         data["unity"].pop("build_target")
@@ -191,6 +238,90 @@ class MultiTargetConfigTests(TestCase):
 
 
 class MultiTargetRunTests(TestCase):
+    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
+    @patch("unity_build_bot.cli.send_email")
+    @patch("unity_build_bot.cli.State.load")
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.steam_uploader.upload")
+    @patch("unity_build_bot.cli.unity_builder.build")
+    @patch("unity_build_bot.cli.version_file.read_version", return_value="1.2.3")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="abcdef123456")
+    @patch("unity_build_bot.cli.load_config")
+    def test_run_sends_success_notification(
+        self,
+        load_config_mock,
+        _has_new_commit_mock,
+        _sync_workdir_mock,
+        _read_version_mock,
+        _build_mock,
+        upload_mock,
+        setup_logging_mock,
+        state_load_mock,
+        send_email_mock,
+        _remove_workspace_mock,
+    ):
+        logger = setup_logging_mock.return_value
+        logger.unity_build_bot_log_file = Path("logs/run-20260928.log")
+        config = SimpleNamespace(
+            git=SimpleNamespace(
+                repo_url="https://github.com/example/game.git",
+                branch="main",
+                workdir=Path("repo"),
+                workspace_root=Path("workspace"),
+            ),
+            unity=SimpleNamespace(builds=[SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True)]),
+            steam=SimpleNamespace(app_id="100"),
+            versioning=SimpleNamespace(
+                version_file="version.txt",
+                auto_increment=False,
+                bump_part="patch",
+                append_short_commit_hash=True,
+                short_commit_hash_length=7,
+            ),
+            logging=SimpleNamespace(log_dir=Path("logs"), level="INFO", show_activity_window=False),
+            notifications=SimpleNamespace(
+                enabled=True,
+                on_success=True,
+                on_failure=True,
+                machine_label="Mac mini M2 / 16 GB",
+                from_address="bot@example.com",
+                from_name="Unity Build Bot",
+                recipients=["dev@example.com"],
+                subject_template="[unity-build-bot] {status}",
+                smtp=SimpleNamespace(password="notif-secret"),
+            ),
+            state=SimpleNamespace(state_file=Path("state.json")),
+            job=SimpleNamespace(mode="build_and_upload"),
+        )
+        state = SimpleNamespace(
+            last_built_sha="old-sha",
+            last_version=None,
+            last_branch=None,
+            last_status=None,
+            last_run_at=None,
+            save=Mock(),
+        )
+        load_config_mock.return_value = config
+        state_load_mock.return_value = state
+        upload_mock.return_value = UploadResult(
+            build_id="25520824",
+            description="test build",
+            log_path=Path("steamcmd.log"),
+        )
+
+        result = cli.run("config.yaml")
+
+        self.assertEqual(0, result)
+        send_email_mock.assert_called_once()
+        notification_cfg, summary = send_email_mock.call_args.args[:2]
+        self.assertEqual(config.notifications, notification_cfg)
+        self.assertEqual("success", summary.status)
+        self.assertEqual("game", summary.repo_name)
+        self.assertEqual("abcdef1", summary.short_sha)
+        self.assertEqual("25520824", summary.steam_build_id)
+        self.assertEqual(Path("logs/run-20260928.log"), summary.log_file)
+
     @patch("unity_build_bot.cli.git_watcher.remove_workspace")
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
@@ -245,6 +376,11 @@ class MultiTargetRunTests(TestCase):
         )
         load_config_mock.return_value = config
         state_load_mock.return_value = state
+        upload_mock.return_value = UploadResult(
+            build_id="25520824",
+            description="test build",
+            log_path=Path("steamcmd.log"),
+        )
 
         result = cli.run("config.yaml")
 
@@ -342,6 +478,81 @@ class MultiTargetRunTests(TestCase):
             "%s failed; run aborted: %s", "Unity build macos", _build_mock.side_effect
         )
 
+    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
+    @patch("unity_build_bot.cli.send_email")
+    @patch("unity_build_bot.cli.State.load")
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.unity_builder.build", side_effect=RuntimeError("build broke"))
+    @patch("unity_build_bot.cli.version_file.read_version", return_value="2.0.0")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="1234567890abcdef")
+    @patch("unity_build_bot.cli.load_config")
+    def test_run_sends_failure_notification(
+        self,
+        load_config_mock,
+        _has_new_commit_mock,
+        _sync_workdir_mock,
+        _read_version_mock,
+        _build_mock,
+        setup_logging_mock,
+        state_load_mock,
+        send_email_mock,
+        _remove_workspace_mock,
+    ):
+        logger = setup_logging_mock.return_value
+        logger.unity_build_bot_log_file = Path("logs/run-20260928.log")
+        config = SimpleNamespace(
+            git=SimpleNamespace(
+                repo_url="git@github.com:example/game.git",
+                branch="develop",
+                workdir=Path("repo"),
+                workspace_root=Path("workspace"),
+            ),
+            unity=SimpleNamespace(builds=[SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True)]),
+            steam=SimpleNamespace(app_id="100"),
+            versioning=SimpleNamespace(
+                version_file="version.txt",
+                auto_increment=False,
+                bump_part="patch",
+                append_short_commit_hash=True,
+                short_commit_hash_length=7,
+            ),
+            logging=SimpleNamespace(log_dir=Path("logs"), level="INFO", show_activity_window=False),
+            notifications=SimpleNamespace(
+                enabled=True,
+                on_success=True,
+                on_failure=True,
+                machine_label="Mac mini M2 / 16 GB",
+                from_address="bot@example.com",
+                from_name="Unity Build Bot",
+                recipients=["dev@example.com"],
+                subject_template="[unity-build-bot] {status}",
+                smtp=SimpleNamespace(password="notif-secret"),
+            ),
+            state=SimpleNamespace(state_file=Path("state.json")),
+            job=SimpleNamespace(mode="build_and_upload"),
+        )
+        state = SimpleNamespace(
+            last_built_sha="old-sha",
+            last_version=None,
+            last_branch="develop",
+            last_status=None,
+            last_run_at=None,
+            save=Mock(),
+        )
+        load_config_mock.return_value = config
+        state_load_mock.return_value = state
+
+        result = cli.run("config.yaml")
+
+        self.assertEqual(1, result)
+        send_email_mock.assert_called_once()
+        _notification_cfg, summary = send_email_mock.call_args.args[:2]
+        self.assertEqual("failure", summary.status)
+        self.assertEqual("Unity build macos", summary.error_stage)
+        self.assertEqual("build broke", summary.error_message)
+        self.assertEqual("1234567", summary.short_sha)
+
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.steam_uploader.upload")
@@ -385,6 +596,11 @@ class MultiTargetRunTests(TestCase):
                 last_branch="develop",
             )
             load_config_mock.return_value = config
+            upload_mock.return_value = UploadResult(
+                build_id="25520824",
+                description="test build",
+                log_path=root / "steamcmd.log",
+            )
 
             result = cli.upload("config.yaml")
 
@@ -457,6 +673,11 @@ class MultiTargetRunTests(TestCase):
             )
             load_config_mock.return_value = config
             state_load_mock.return_value = state
+            upload_mock.return_value = UploadResult(
+                build_id="25520824",
+                description="test build",
+                log_path=root / "steamcmd.log",
+            )
 
             result = cli.run("config.yaml")
 

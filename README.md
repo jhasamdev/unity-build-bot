@@ -43,6 +43,7 @@ src/unity_build_bot/
   git_watcher.py         # ls-remote polling + clean pull
   unity_builder.py        # invokes Unity -batchmode
   steam_uploader.py       # generates vdf + runs steamcmd
+  notifier.py             # optional SMTP email notifications
   version_file.py         # reads/bumps version.txt
   state.py                # last built SHA / version / status (JSON)
   logging_utils.py        # file + console logging
@@ -367,6 +368,41 @@ only the incremented base version so the next build can bump it normally.
 The state file records the last detected commit SHA, generated build version,
 branch, status, and run time even when a build fails. Failed commits remain
 eligible for retry on the next scheduled run.
+
+### Email notifications
+
+Enable `notifications` in `config.yaml` to send an SMTP email after a successful
+upload or a failed run. Leave the section disabled to skip email entirely.
+
+```yaml
+notifications:
+  enabled: true
+  transport: "smtp"
+  on_success: true
+  on_failure: true
+  from_address: "buildbot@example.com"
+  from_name: "Unity Build Bot"
+  recipients:
+    - "team@example.com"
+  subject_template: "[unity-build-bot] {status} {repo} {branch} {version}"
+  machine_label: "Mac mini M2 / 16 GB"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    username: "buildbot@example.com"
+    password_env: "SMTP_PASSWORD"
+    use_starttls: true
+    use_ssl: false
+```
+
+The email body includes the repository, branch, commit SHA, version, enabled
+targets, Steam App ID, Steam BuildID, start/end time, total duration, log file
+path, and machine details. Failure emails also include the failed stage and a
+redacted error summary.
+
+Store `SMTP_PASSWORD` in the environment or `config/secrets.yaml`; never place
+it directly in `config.yaml`. `subject_template` supports `{status}`, `{repo}`,
+`{branch}`, `{version}`, `{short_sha}`, `{build_id}`, and `{job_mode}`.
 
 ### Steam build descriptions
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,13 @@ logger = logging.getLogger("unity_build_bot")
 _SUCCESS_PATTERN = re.compile(
     r"Successfully finished AppID (?P<app_id>\d+) build \(BuildID (?P<build_id>\d+)\)"
 )
+
+
+@dataclass(frozen=True)
+class UploadResult:
+    build_id: str
+    description: str
+    log_path: Path
 
 
 def _render_build_description(
@@ -100,7 +108,7 @@ def upload(
     content_roots: dict[str, Path],
     workdir_root: Path,
     build_metadata: dict[str, str] | None = None,
-) -> None:
+) -> UploadResult:
     if not steam_cfg.config_vdf_path.is_file():
         raise RuntimeError(
             f"Steam session file not found at {steam_cfg.config_vdf_path}. "
@@ -139,3 +147,4 @@ def upload(
         )
 
     logger.info("Steam upload complete for app %s (build_id=%s)", steam_cfg.app_id, build_id)
+    return UploadResult(build_id=build_id, description=description, log_path=steamcmd_log)

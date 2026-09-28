@@ -48,7 +48,12 @@ class SyncWorkdirTests(TestCase):
         info_mock.assert_called_once_with("Git remote head (branch=%s, sha=%s)", "main", "abc123")
         args, kwargs = run_mock.call_args
         self.assertNotIn("secret-token", " ".join(args[0]))
-        self.assertIn("AUTHORIZATION: basic ", kwargs["env"]["GIT_CONFIG_VALUE_0"])
+        auth_values = [
+            value
+            for key, value in kwargs["env"].items()
+            if key.startswith("GIT_CONFIG_VALUE_")
+        ]
+        self.assertTrue(any("AUTHORIZATION: basic " in value for value in auth_values))
         self.assertEqual("0", kwargs["env"]["GIT_TERMINAL_PROMPT"])
 
     @patch("unity_build_bot.git_watcher._run")
