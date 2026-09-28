@@ -60,5 +60,24 @@ logging:
   level: "INFO"
   show_activity_window: false          # open a live terminal window on macOS or Windows
 
+notifications:
+  enabled: false
+  transport: "smtp"
+  on_success: true
+  on_failure: true
+  from_address: "buildbot@example.com"
+  from_name: "Unity Build Bot"
+  recipients:
+    - "team@example.com"
+  subject_template: "[unity-build-bot] {status} {repo} {branch} {version}"
+  machine_label: ""                    # optional, e.g. "Mac mini M2 / 16 GB"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    username: "buildbot@example.com"
+    password_env: "SMTP_PASSWORD"
+    use_starttls: true
+    use_ssl: false
+
 state:
   state_file: "~/.unity-build-bot/state.json"

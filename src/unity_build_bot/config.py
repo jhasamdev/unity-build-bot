@@ -12,6 +12,15 @@ import yaml
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _BUILD_DESCRIPTION_FIELDS = {"version", "branch", "short_sha", "targets"}
+_NOTIFICATION_SUBJECT_FIELDS = {
+    "status",
+    "repo",
+    "branch",
+    "version",
+    "short_sha",
+    "build_id",
+    "job_mode",
+}
 
 
 def _expand_env(value: Any, variables: dict[str, str]) -> Any:
@@ -85,6 +94,31 @@ class LoggingConfig:
 
 
 @dataclass
+class NotificationSmtpConfig:
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password_env: str | None = None
+    password: str | None = None
+    use_starttls: bool = True
+    use_ssl: bool = False
+
+
+@dataclass
+class NotificationConfig:
+    enabled: bool = False
+    transport: str = "smtp"
+    on_success: bool = True
+    on_failure: bool = True
+    from_address: str = ""
+    from_name: str = ""
+    recipients: list[str] = field(default_factory=list)
+    subject_template: str = "[unity-build-bot] {status} {repo} {branch} {version}"
+    machine_label: str = ""
+    smtp: NotificationSmtpConfig = field(default_factory=NotificationSmtpConfig)
+
+
+@dataclass
 class StateConfig:
     state_file: Path
 
@@ -103,6 +137,7 @@ class Config:
     versioning: VersioningConfig
     steam: SteamConfig
     logging: LoggingConfig
+    notifications: NotificationConfig
     state: StateConfig
     job: JobConfig
 
@@ -161,6 +196,30 @@ def _validate_build_description(template: Any) -> str:
         if str(exc).startswith("steam.") or str(exc).startswith("Unsupported"):
             raise
         raise ValueError(f"Invalid steam.build_description template: {exc}") from exc
+    return template
+
+
+def _validate_notification_subject(template: Any) -> str:
+    if not isinstance(template, str):
+        raise ValueError("notifications.subject_template must be a string")
+    try:
+        parsed = Formatter().parse(template)
+        for _, field_name, format_spec, conversion in parsed:
+            if field_name is None:
+                continue
+            if field_name not in _NOTIFICATION_SUBJECT_FIELDS:
+                raise ValueError(
+                    f"Unsupported notifications.subject_template placeholder: {{{field_name}}}"
+                )
+            if format_spec or conversion:
+                raise ValueError(
+                    "notifications.subject_template placeholders do not support "
+                    "format specifiers or conversions"
+                )
+    except ValueError as exc:
+        if str(exc).startswith("notifications.") or str(exc).startswith("Unsupported"):
+            raise
+        raise ValueError(f"Invalid notifications.subject_template template: {exc}") from exc
     return template
 
 
@@ -236,6 +295,83 @@ def _load_depots(
     return depots
 
 
+def _load_notifications(
+    notifications_raw: dict[str, Any],
+    variables: dict[str, str],
+) -> NotificationConfig:
+    enabled = notifications_raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("notifications.enabled must be true or false")
+    transport = notifications_raw.get("transport", "smtp")
+    if transport != "smtp":
+        raise ValueError("notifications.transport must be 'smtp'")
+    on_success = notifications_raw.get("on_success", True)
+    if not isinstance(on_success, bool):
+        raise ValueError("notifications.on_success must be true or false")
+    on_failure = notifications_raw.get("on_failure", True)
+    if not isinstance(on_failure, bool):
+        raise ValueError("notifications.on_failure must be true or false")
+    recipients = notifications_raw.get("recipients", [])
+    if not isinstance(recipients, list) or not all(
+        isinstance(recipient, str) and recipient.strip() for recipient in recipients
+    ):
+        raise ValueError("notifications.recipients must be a list of non-empty strings")
+    smtp_raw = notifications_raw.get("smtp", {})
+    if not isinstance(smtp_raw, dict):
+        raise ValueError("notifications.smtp must be a mapping")
+    smtp_port = smtp_raw.get("port", 587)
+    if type(smtp_port) is not int or not 1 <= smtp_port <= 65535:
+        raise ValueError("notifications.smtp.port must be an integer from 1 to 65535")
+    use_starttls = smtp_raw.get("use_starttls", True)
+    if not isinstance(use_starttls, bool):
+        raise ValueError("notifications.smtp.use_starttls must be true or false")
+    use_ssl = smtp_raw.get("use_ssl", False)
+    if not isinstance(use_ssl, bool):
+        raise ValueError("notifications.smtp.use_ssl must be true or false")
+    if use_ssl and use_starttls:
+        raise ValueError(
+            "notifications.smtp.use_ssl and notifications.smtp.use_starttls cannot both be true"
+        )
+    password_env = smtp_raw.get("password_env")
+    password = variables.get(password_env) if password_env else None
+    if enabled:
+        if not recipients:
+            raise ValueError("notifications.recipients must contain at least one address when enabled")
+        if not notifications_raw.get("from_address"):
+            raise ValueError("Missing required configuration value: notifications.from_address")
+        if not smtp_raw.get("host"):
+            raise ValueError("Missing required configuration value: notifications.smtp.host")
+        if password_env and not password:
+            raise ValueError(
+                f"Notification SMTP password variable {password_env} is not set; define it in the "
+                "environment or config/secrets.yaml"
+            )
+    return NotificationConfig(
+        enabled=enabled,
+        transport=transport,
+        on_success=on_success,
+        on_failure=on_failure,
+        from_address=notifications_raw.get("from_address", ""),
+        from_name=notifications_raw.get("from_name", ""),
+        recipients=recipients,
+        subject_template=_validate_notification_subject(
+            notifications_raw.get(
+                "subject_template",
+                "[unity-build-bot] {status} {repo} {branch} {version}",
+            )
+        ),
+        machine_label=notifications_raw.get("machine_label", ""),
+        smtp=NotificationSmtpConfig(
+            host=smtp_raw.get("host", ""),
+            port=smtp_port,
+            username=smtp_raw.get("username", ""),
+            password_env=password_env,
+            password=password,
+            use_ssl=use_ssl,
+        ),
+    )
+
+
 def load_config(path: str | Path) -> Config:
     path = Path(path).expanduser().resolve()
     if not path.is_file():
@@ -256,6 +392,7 @@ def load_config(path: str | Path) -> Config:
     versioning_raw = _section(raw, "versioning")
     steam_raw = _section(raw, "steam")
     logging_raw = _section(raw, "logging")
+    notifications_raw = _section(raw, "notifications")
     state_raw = _section(raw, "state")
     job_raw = _section(raw, "job")
 
@@ -349,6 +486,7 @@ def load_config(path: str | Path) -> Config:
             level=logging_raw.get("level", "INFO"),
             show_activity_window=show_activity_window,
         ),
+        notifications=_load_notifications(notifications_raw, variables),
         state=StateConfig(
             state_file=_expand_path(
                 state_raw.get("state_file", "~/.unity-build-bot/state.json"),

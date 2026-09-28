@@ -60,4 +60,5 @@ def setup_logging(
     if show_activity_window:
         open_activity_window(log_file)
 
+    setattr(logger, "unity_build_bot_log_file", log_file)
     return logger

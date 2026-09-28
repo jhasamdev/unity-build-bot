@@ -15,6 +15,13 @@ from pathlib import Path
 from unity_build_bot import git_watcher, steam_uploader, unity_builder, version_file
 from unity_build_bot.config import load_config
 from unity_build_bot.logging_utils import setup_logging
+from unity_build_bot.notifier import (
+    RunSummary,
+    build_machine_details,
+    repo_name_from_url,
+    send_email,
+    should_notify,
+)
 from unity_build_bot.run_lock import RunLock
 from unity_build_bot.state import State
 
@@ -39,15 +46,101 @@ def _validate_content_roots(content_roots: dict[str, Path]) -> None:
         )
 
 
+def _configured_secrets(cfg) -> tuple[str, ...]:
+    secrets = []
+    git_token = getattr(cfg.git, "auth_token", None)
+    if git_token:
+        secrets.append(git_token)
+    notifications = getattr(cfg, "notifications", None)
+    smtp_cfg = getattr(notifications, "smtp", None)
+    smtp_password = getattr(smtp_cfg, "password", None)
+    if smtp_password:
+        secrets.append(smtp_password)
+    return tuple(secrets)
+
+
+def _log_file_from_logger(logger: logging.Logger) -> Path | None:
+    log_file = getattr(logger, "unity_build_bot_log_file", None)
+    return log_file if isinstance(log_file, Path) else None
+
+
+def _build_summary(
+    cfg,
+    logger: logging.Logger,
+    start_time: datetime,
+    end_time: datetime,
+    *,
+    status: str,
+    state: State | None,
+    upload_result: steam_uploader.UploadResult | None = None,
+    error_stage: str = "",
+    error_message: str = "",
+) -> RunSummary:
+    git_cfg = getattr(cfg, "git", None)
+    versioning_cfg = getattr(cfg, "versioning", None)
+    job_cfg = getattr(cfg, "job", None)
+    steam_cfg = getattr(cfg, "steam", None)
+    commit_sha = (
+        state.last_built_sha
+        if state and state.last_built_sha
+        else "unknown"
+    )
+    short_sha_length = getattr(versioning_cfg, "short_commit_hash_length", 7)
+    short_sha = (
+        commit_sha[:short_sha_length]
+        if commit_sha != "unknown"
+        else "unknown"
+    )
+    version = state.last_version if state and state.last_version else "unknown"
+    targets = ",".join(
+        build_cfg.id
+        for build_cfg in cfg.unity.builds
+        if build_cfg.enabled
+    ) or "unknown"
+    return RunSummary(
+        status=status,
+        job_mode=getattr(job_cfg, "mode", "upload_only"),
+        repo_url=getattr(git_cfg, "repo_url", "unknown"),
+        repo_name=repo_name_from_url(getattr(git_cfg, "repo_url", "unknown")),
+        branch=state.last_branch if state and state.last_branch else getattr(git_cfg, "branch", "unknown"),
+        commit_sha=commit_sha,
+        short_sha=short_sha,
+        version=version,
+        targets=targets,
+        steam_app_id=getattr(steam_cfg, "app_id", "unknown"),
+        steam_build_id=upload_result.build_id if upload_result else "unknown",
+        started_at=start_time,
+        ended_at=end_time,
+        duration_seconds=max((end_time - start_time).total_seconds(), 0.0),
+        machine=build_machine_details(
+            getattr(getattr(cfg, "notifications", None), "machine_label", "")
+        ),
+        log_file=_log_file_from_logger(logger),
+        error_stage=error_stage,
+        error_message=error_message,
+    )
+
+
+def _send_notification(cfg, logger: logging.Logger, summary: RunSummary, secrets: tuple[str, ...]) -> None:
+    notifications = getattr(cfg, "notifications", None)
+    if not should_notify(notifications, summary.status):
+        return
+    try:
+        send_email(notifications, summary, secrets=secrets)
+    except Exception as exc:  # noqa: BLE001 - notifications must not change job status
+        logger.exception("Notification delivery failed: %s", exc)
+
+
 def run(config_path: str) -> int:
     cfg = load_config(config_path)
-    git_token = getattr(cfg.git, "auth_token", None)
+    secrets = _configured_secrets(cfg)
     logger = setup_logging(
         cfg.logging.log_dir,
         cfg.logging.level,
         cfg.logging.show_activity_window,
-        secrets=(git_token,) if git_token else (),
+        secrets=secrets,
     )
+    start_time = datetime.now(timezone.utc)
     run_lock = RunLock(cfg.state.state_file.parent / ".run.lock")
     if not run_lock.acquire():
         logger.warning("Another bot run is active; skipping this scheduled run")
@@ -56,12 +149,29 @@ def run(config_path: str) -> int:
     try:
         logger.info("Run started (mode=%s, branch=%s)", cfg.job.mode, cfg.git.branch)
         stage = "State load"
+        state = State()
         try:
             state = State.load(cfg.state.state_file)
             if cfg.job.mode == "upload_only":
                 stage = "Upload-only run"
                 logger.info("Job mode is upload_only; skipping Git sync and Unity build")
-                return upload_existing_outputs(cfg, logger, state)
+                upload_result = upload_existing_outputs(cfg, logger, state)
+                end_time = datetime.now(timezone.utc)
+                _send_notification(
+                    cfg,
+                    logger,
+                    _build_summary(
+                        cfg,
+                        logger,
+                        start_time,
+                        end_time,
+                        status="success",
+                        state=state,
+                        upload_result=upload_result,
+                    ),
+                    secrets,
+                )
+                return 0
 
             stage = "Git check"
             comparison_sha = state.last_built_sha
@@ -116,7 +226,7 @@ def run(config_path: str) -> int:
                 unity_builder.build(cfg.unity, build_cfg, cfg.git.workdir, version)
                 content_roots[build_cfg.id] = build_cfg.output_subdir
             stage = "Steam upload"
-            _upload_with_retries(
+            upload_result = _upload_with_retries(
                 cfg,
                 logger,
                 content_roots,
@@ -140,6 +250,21 @@ def run(config_path: str) -> int:
             state.last_run_at = datetime.now(timezone.utc).isoformat()
             state.save(cfg.state.state_file)
             logger.info("Run finished successfully: version=%s sha=%s", version, new_sha)
+            end_time = datetime.now(timezone.utc)
+            _send_notification(
+                cfg,
+                logger,
+                _build_summary(
+                    cfg,
+                    logger,
+                    start_time,
+                    end_time,
+                    status="success",
+                    state=state,
+                    upload_result=upload_result,
+                ),
+                secrets,
+            )
             return 0
 
         except Exception as exc:  # noqa: BLE001 - top-level job boundary
@@ -147,6 +272,22 @@ def run(config_path: str) -> int:
             state.last_status = f"failed: {exc}"
             state.last_run_at = datetime.now(timezone.utc).isoformat()
             state.save(cfg.state.state_file)
+            end_time = datetime.now(timezone.utc)
+            _send_notification(
+                cfg,
+                logger,
+                _build_summary(
+                    cfg,
+                    logger,
+                    start_time,
+                    end_time,
+                    status="failure",
+                    state=state,
+                    error_stage=stage,
+                    error_message=str(exc),
+                ),
+                secrets,
+            )
             return 1
         finally:
             try:
@@ -183,24 +324,61 @@ def _upload_with_retries(cfg, logger, content_roots, workdir, build_metadata):
 
 def upload(config_path: str) -> int:
     cfg = load_config(config_path)
-    git_token = getattr(cfg.git, "auth_token", None)
+    secrets = _configured_secrets(cfg)
     logger = setup_logging(
         cfg.logging.log_dir,
         cfg.logging.level,
         cfg.logging.show_activity_window,
-        secrets=(git_token,) if git_token else (),
+        secrets=secrets,
     )
+    start_time = datetime.now(timezone.utc)
 
     try:
         logger.info("Upload-only run started")
         state = State.load(cfg.state.state_file)
-        return upload_existing_outputs(cfg, logger, state)
+        upload_result = upload_existing_outputs(cfg, logger, state)
+        end_time = datetime.now(timezone.utc)
+        _send_notification(
+            cfg,
+            logger,
+            _build_summary(
+                cfg,
+                logger,
+                start_time,
+                end_time,
+                status="success",
+                state=state,
+                upload_result=upload_result,
+            ),
+            secrets,
+        )
+        return 0
     except Exception as exc:  # noqa: BLE001 - top-level job boundary
         logger.exception("Upload-only run failed: %s", exc)
+        end_time = datetime.now(timezone.utc)
+        _send_notification(
+            cfg,
+            logger,
+            _build_summary(
+                cfg,
+                logger,
+                start_time,
+                end_time,
+                status="failure",
+                state=None,
+                error_stage="Upload-only run",
+                error_message=str(exc),
+            ),
+            secrets,
+        )
         return 1
 
 
-def upload_existing_outputs(cfg, logger: logging.Logger, state: State | None = None) -> int:
+def upload_existing_outputs(
+    cfg,
+    logger: logging.Logger,
+    state: State | None = None,
+) -> steam_uploader.UploadResult:
     content_roots = _content_roots_from_enabled_builds(cfg)
     logger.info(
         "Upload context (branch=%s, sha=%s)",
@@ -212,7 +390,7 @@ def upload_existing_outputs(cfg, logger: logging.Logger, state: State | None = N
     logger.info("Build output validation finished")
     logger.info("Uploading existing build outputs without running Unity")
     commit_sha = state.last_built_sha if state else None
-    _upload_with_retries(
+    upload_result = _upload_with_retries(
         cfg,
         logger,
         content_roots,
@@ -228,7 +406,7 @@ def upload_existing_outputs(cfg, logger: logging.Logger, state: State | None = N
         },
     )
     logger.info("Upload-only run complete")
-    return 0
+    return upload_result
 
 
 def status(config_path: str) -> int:
