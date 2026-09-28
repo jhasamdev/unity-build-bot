@@ -367,6 +367,7 @@ def _load_notifications(
             username=smtp_raw.get("username", ""),
             password_env=password_env,
             password=password,
+            use_starttls=use_starttls,
             use_ssl=use_ssl,
         ),
     )

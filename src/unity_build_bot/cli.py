@@ -77,6 +77,7 @@ def _build_summary(
     error_message: str = "",
 ) -> RunSummary:
     git_cfg = getattr(cfg, "git", None)
+    unity_cfg = getattr(cfg, "unity", None)
     versioning_cfg = getattr(cfg, "versioning", None)
     job_cfg = getattr(cfg, "job", None)
     steam_cfg = getattr(cfg, "steam", None)
@@ -94,7 +95,7 @@ def _build_summary(
     version = state.last_version if state and state.last_version else "unknown"
     targets = ",".join(
         build_cfg.id
-        for build_cfg in cfg.unity.builds
+        for build_cfg in getattr(unity_cfg, "builds", [])
         if build_cfg.enabled
     ) or "unknown"
     return RunSummary(

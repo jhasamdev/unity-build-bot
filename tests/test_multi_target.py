@@ -531,6 +531,7 @@ class MultiTargetRunTests(TestCase):
             ),
             state=SimpleNamespace(state_file=Path("state.json")),
             job=SimpleNamespace(mode="build_and_upload"),
+        )
         state = SimpleNamespace(
             last_built_sha="old-sha",
             last_version=None,
