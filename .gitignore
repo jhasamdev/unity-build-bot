@@ -23,6 +23,9 @@
 /workspace/
 /build/
 /dist/
+/src/unity_build_bot.egg-info/
+/tests/__pycache__/
+.DS_Store
 __pycache__/
 *.py[cod]
 /.venv/
