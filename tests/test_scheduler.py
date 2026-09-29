@@ -18,7 +18,8 @@ class MacSchedulerTests(TestCase):
                 (config_dir / name).touch()
             python_path = tool_path / ".venv/bin/python"
             python_path.parent.mkdir(parents=True)
-            python_path.touch(mode=0o755)
+            python_path.write_text("#!/bin/sh\nexit 0\n")
+            python_path.chmod(0o755)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             launchctl = bin_dir / "launchctl"
