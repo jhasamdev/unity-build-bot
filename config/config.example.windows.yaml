@@ -15,6 +15,7 @@ unity:
   project_subpath: "."
   build_method: "BuildScript.PerformBuild"
   extra_args: []
+  clean_build: "never"                 # never | always | on_previous_failure
   builds:
     - id: "windows"
       enabled: true
@@ -33,6 +34,7 @@ job:
   mode: "build_and_upload"
   steam_upload_retries: 3
   steam_upload_retry_delay_seconds: 30
+  prevent_sleep: true                  # block idle sleep while the job runs
 
 steam:
   steamcmd_path: "C:/steamcmd/steamcmd.exe"

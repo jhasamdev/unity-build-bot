@@ -9,10 +9,17 @@ import logging
 import shutil
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
-from unity_build_bot import git_watcher, steam_uploader, unity_builder, version_file
+from unity_build_bot import (
+    git_watcher,
+    process_runner,
+    steam_uploader,
+    unity_builder,
+    version_file,
+)
 from unity_build_bot.config import load_config
 from unity_build_bot.logging_utils import setup_logging
 from unity_build_bot.run_lock import RunLock
@@ -25,6 +32,15 @@ def _content_roots_from_enabled_builds(cfg) -> dict[str, Path]:
         for build_cfg in cfg.unity.builds
         if build_cfg.enabled
     }
+
+
+def _workspace_sync_decision(
+    state_file_exists: bool,
+    previous_branch: str | None,
+    configured_branch: str,
+) -> tuple[bool, bool]:
+    initialized = state_file_exists and previous_branch is not None
+    return not initialized, initialized and previous_branch != configured_branch
 
 
 def _validate_content_roots(content_roots: dict[str, Path]) -> None:
@@ -53,10 +69,15 @@ def run(config_path: str) -> int:
         logger.warning("Another bot run is active; skipping this scheduled run")
         return 0
 
+    resources = ExitStack()
+    resources.enter_context(
+        process_runner.keep_awake(getattr(cfg.job, "prevent_sleep", True))
+    )
     try:
         logger.info("Run started (mode=%s, branch=%s)", cfg.job.mode, cfg.git.branch)
         stage = "State load"
         try:
+            state_file_exists = cfg.state.state_file.is_file()
             state = State.load(cfg.state.state_file)
             if cfg.job.mode == "upload_only":
                 stage = "Upload-only run"
@@ -65,7 +86,10 @@ def run(config_path: str) -> int:
 
             stage = "Git check"
             comparison_sha = state.last_built_sha
-            if state.last_status and state.last_status.startswith("failed:"):
+            previous_run_failed = bool(
+                state.last_status and state.last_status.startswith("failed:")
+            )
+            if previous_run_failed:
                 comparison_sha = None
             if getattr(state, "last_branch", None) not in {None, cfg.git.branch}:
                 comparison_sha = None
@@ -73,6 +97,29 @@ def run(config_path: str) -> int:
             logger.info("Git check started (branch=%s)", cfg.git.branch)
             new_sha = git_watcher.has_new_commit(cfg.git, comparison_sha)
             logger.info("Git check finished (new_commit=%s)", new_sha is not None)
+            first_run, branch_changed = _workspace_sync_decision(
+                state_file_exists,
+                state.last_branch,
+                cfg.git.branch,
+            )
+            stage = "Workspace sync"
+            logger.info(
+                "Workspace sync started (first_run=%s, branch_changed=%s)",
+                first_run,
+                branch_changed,
+            )
+            git_watcher.sync_workdir(
+                cfg.git,
+                first_run=first_run,
+                branch_changed=branch_changed,
+                build_outputs=[
+                    build.output_subdir
+                    for build in cfg.unity.builds
+                    if build.enabled
+                ],
+            )
+            logger.info("Workspace sync finished")
+
             if new_sha is None:
                 logger.info("Run finished: no new commits on %s", cfg.git.branch)
                 return 0
@@ -84,10 +131,6 @@ def run(config_path: str) -> int:
             )
             state.last_built_sha = new_sha
             state.last_branch = cfg.git.branch
-            stage = "Workspace sync"
-            logger.info("Workspace sync started")
-            git_watcher.sync_workdir(cfg.git)
-            logger.info("Workspace sync finished")
 
             stage = "Version preparation"
             logger.info("Version preparation started")
@@ -108,12 +151,24 @@ def run(config_path: str) -> int:
             logger.info("Version preparation finished (version=%s)", version)
 
             content_roots = {}
+            clean_build = _needs_clean_build(cfg, previous_run_failed)
+            if clean_build:
+                logger.info(
+                    "Clean build requested (unity.clean_build=%s)",
+                    getattr(cfg.unity, "clean_build", "never"),
+                )
             for build_cfg in cfg.unity.builds:
                 if not build_cfg.enabled:
                     logger.debug("Skipping disabled build %s", build_cfg.id)
                     continue
                 stage = f"Unity build {build_cfg.id}"
-                unity_builder.build(cfg.unity, build_cfg, cfg.git.workdir, version)
+                unity_builder.build(
+                    cfg.unity,
+                    build_cfg,
+                    cfg.git.workdir,
+                    version,
+                    clean_build=clean_build,
+                )
                 content_roots[build_cfg.id] = build_cfg.output_subdir
             stage = "Steam upload"
             _upload_with_retries(
@@ -149,14 +204,20 @@ def run(config_path: str) -> int:
             state.save(cfg.state.state_file)
             return 1
         finally:
-            try:
-                logger.info("Workspace cleanup started")
-                git_watcher.remove_workspace(cfg.git.workspace_root)
-                logger.info("Workspace cleanup finished: %s", cfg.git.workspace_root)
-            except Exception as exc:  # noqa: BLE001 - cleanup must not hide run result
-                logger.exception("Workspace cleanup failed: %s", exc)
+            if cfg.job.mode != "upload_only":
+                logger.info("Workspace kept for next run: %s", cfg.git.workspace_root)
     finally:
+        resources.close()
         run_lock.release()
+
+
+def _needs_clean_build(cfg, previous_run_failed: bool) -> bool:
+    mode = getattr(cfg.unity, "clean_build", "never")
+    if mode == "always":
+        return True
+    if mode == "on_previous_failure":
+        return previous_run_failed
+    return False
 
 
 def _upload_with_retries(cfg, logger, content_roots, workdir, build_metadata):

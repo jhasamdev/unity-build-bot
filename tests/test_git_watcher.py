@@ -25,7 +25,7 @@ class SyncWorkdirTests(TestCase):
 
         with patch("unity_build_bot.git_watcher._run") as run_mock:
             with self.assertRaisesRegex(RuntimeError, "protected directory"):
-                sync_workdir(config)
+                sync_workdir(config, first_run=True, branch_changed=False)
 
         run_mock.assert_not_called()
 
@@ -57,6 +57,14 @@ class SyncWorkdirTests(TestCase):
         config = GitConfig("git@example/repo.git", "main", Path("repo"), Path("workspace"))
 
         with self.assertRaisesRegex(RuntimeError, "git ls-remote failed: authentication failed"):
+            remote_head_sha(config)
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_missing_remote_branch_is_rejected(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "", "")
+        config = GitConfig("git@example/repo.git", "missing", Path("repo"), Path("workspace"))
+
+        with self.assertRaisesRegex(RuntimeError, "Branch 'missing' not found"):
             remote_head_sha(config)
 
     def test_detaches_workspace_before_recursive_delete(self):
@@ -98,7 +106,7 @@ class SyncWorkdirTests(TestCase):
             stale_build.write_text("stale")
             config = GitConfig("git@example/repo.git", "main", workdir, workspace_root)
 
-            sync_workdir(config)
+            sync_workdir(config, first_run=True, branch_changed=False)
 
             self.assertFalse(stale_file.exists())
             self.assertFalse(stale_build.exists())
@@ -109,8 +117,8 @@ class SyncWorkdirTests(TestCase):
             ])
 
     @patch("unity_build_bot.git_watcher._run")
-    def test_existing_clone_is_replaced_with_fresh_clone(self, run_mock):
-        run_mock.return_value = CompletedProcess([], 0, "", "")
+    def test_existing_state_with_other_remote_recovers_with_clean_clone(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "git@example/other.git\n", "")
         with TemporaryDirectory() as temp_dir:
             workspace_root = Path(temp_dir) / "workspace"
             workdir = workspace_root / "repo"
@@ -118,9 +126,137 @@ class SyncWorkdirTests(TestCase):
             git_dir.mkdir(parents=True)
             config = GitConfig("git@example/repo.git", "main", workdir, workspace_root)
 
-            sync_workdir(config)
+            sync_workdir(config, first_run=False, branch_changed=False)
 
             self.assertFalse(git_dir.exists())
+            self.assertEqual(
+                ["git", "clone", "--progress", "--branch", "main", "git@example/repo.git", str(workdir.resolve())],
+                run_mock.call_args.args[0],
+            )
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_existing_clone_is_updated_in_place(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "git@example/repo.git\n", "")
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workdir = (workspace_root / "repo").resolve()
+            (workdir / ".git").mkdir(parents=True)
+            kept = workdir / "Library"
+            kept.mkdir()
+            config = GitConfig("git@example/repo.git", "main", workdir, workspace_root)
+
+            sync_workdir(config, first_run=False, branch_changed=False)
+
+            self.assertTrue(kept.is_dir())
+            self.assertEqual(
+                [
+                    ["git", "-C", str(workdir), "remote", "get-url", "origin"],
+                    [
+                        "git", "-C", str(workdir), "reset", "--hard",
+                    ],
+                    [
+                        "git", "-C", str(workdir), "clean", "-ffd",
+                    ],
+                    [
+                        "git", "-C", str(workdir), "checkout", "--force", "-B", "main",
+                    ],
+                    [
+                        "git", "-C", str(workdir), "pull", "--ff-only", "--progress",
+                        "origin", "main",
+                    ],
+                ],
+                [call.args[0] for call in run_mock.call_args_list],
+            )
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_branch_change_fetches_and_checks_out_configured_branch(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "git@example/repo.git\n", "")
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workdir = (workspace_root / "repo").resolve()
+            (workdir / ".git").mkdir(parents=True)
+            config = GitConfig("git@example/repo.git", "develop", workdir, workspace_root)
+            build_output = workspace_root / "build" / "macos"
+            build_output.mkdir(parents=True)
+            (build_output / "old.app").write_text("old output")
+
+            sync_workdir(
+                config,
+                first_run=False,
+                branch_changed=True,
+                build_outputs=[build_output],
+            )
+
+        self.assertFalse(build_output.exists())
+        self.assertEqual(
+            [
+                ["git", "-C", str(workdir), "remote", "get-url", "origin"],
+                ["git", "-C", str(workdir), "reset", "--hard"],
+                ["git", "-C", str(workdir), "clean", "-ffd"],
+                [
+                    "git", "-C", str(workdir), "fetch", "--progress",
+                    "origin", "develop",
+                ],
+                [
+                    "git", "-C", str(workdir), "checkout", "--force", "-B",
+                    "develop", "FETCH_HEAD",
+                ],
+            ],
+            [call.args[0] for call in run_mock.call_args_list],
+        )
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_existing_clone_update_failure_does_not_clone_or_clear_workspace(self, run_mock):
+        run_mock.side_effect = [
+            CompletedProcess([], 0, "git@example/repo.git\n", ""),
+            CompletedProcess([], 1, "network unavailable", ""),
+        ]
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workdir = (workspace_root / "repo").resolve()
+            (workdir / ".git").mkdir(parents=True)
+            marker = workdir / "preserved.marker"
+            marker.write_text("keep workspace for retry")
+            config = GitConfig("git@example/repo.git", "main", workdir, workspace_root)
+
+            with self.assertRaisesRegex(RuntimeError, "git reset failed: network unavailable"):
+                sync_workdir(config, first_run=False, branch_changed=False)
+
+            self.assertTrue(marker.is_file())
+            self.assertEqual(2, run_mock.call_count)
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_branch_checkout_failure_suggests_clean_reinitialization(self, run_mock):
+        run_mock.side_effect = [
+            CompletedProcess([], 0, "git@example/repo.git\n", ""),
+            CompletedProcess([], 0, "", ""),
+            CompletedProcess([], 0, "", ""),
+            CompletedProcess([], 0, "", ""),
+            CompletedProcess([], 1, "ignored file blocks checkout", ""),
+        ]
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workdir = (workspace_root / "repo").resolve()
+            (workdir / ".git").mkdir(parents=True)
+            config = GitConfig("git@example/repo.git", "develop", workdir, workspace_root)
+
+            with self.assertRaisesRegex(RuntimeError, "remove the configured state file"):
+                sync_workdir(config, first_run=False, branch_changed=True)
+
+            self.assertEqual(5, run_mock.call_count)
+            self.assertTrue((workdir / ".git").is_dir())
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_first_run_always_clears_and_clones(self, run_mock):
+        run_mock.return_value = CompletedProcess([], 0, "git@example/repo.git\n", "")
+        with TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workdir = workspace_root / "repo"
+            (workdir / ".git").mkdir(parents=True)
+            config = GitConfig("git@example/repo.git", "main", workdir, workspace_root)
+
+            sync_workdir(config, first_run=True, branch_changed=False)
+
             run_mock.assert_called_once_with([
                 "git", "clone", "--progress", "--branch", "main",
                 "git@example/repo.git", str(workdir.resolve()),

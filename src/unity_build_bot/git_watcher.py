@@ -110,14 +110,134 @@ def has_new_commit(git_cfg: GitConfig, last_built_sha: str | None) -> str | None
     return None
 
 
-def sync_workdir(git_cfg: GitConfig) -> None:
-    """Clear the complete workspace and clone a fresh copy of the branch."""
+def _is_reusable_clone(workdir: Path, git_cfg: GitConfig) -> bool:
+    """True when workdir already holds a clone of the configured remote."""
+    if not (workdir / ".git").exists():
+        return False
+    result = _run(["git", "-C", str(workdir), "remote", "get-url", "origin"])
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip() == git_cfg.repo_url
+
+
+def _update_existing_clone(
+    workdir: Path,
+    git_cfg: GitConfig,
+    branch_changed: bool,
+    build_outputs: list[Path],
+) -> None:
+    """Discard local changes and sync the configured branch in an existing clone.
+
+    Ignored files (Unity's Library/ cache) are deliberately kept so the next
+    Unity build does not have to reimport the whole project.
+    """
+    steps = [
+        (
+            "git reset",
+            ["git", "-C", str(workdir), "reset", "--hard"],
+        ),
+        (
+            "git clean",
+            ["git", "-C", str(workdir), "clean", "-ffd"],
+        ),
+    ]
+    if branch_changed:
+        steps.extend([
+            (
+                "git fetch",
+                [
+                    "git", "-C", str(workdir), "fetch", "--progress",
+                    "origin", git_cfg.branch,
+                ],
+            ),
+            (
+                "git checkout",
+                [
+                    "git", "-C", str(workdir), "checkout", "--force", "-B",
+                    git_cfg.branch, "FETCH_HEAD",
+                ],
+            ),
+        ])
+    else:
+        steps.extend([
+            (
+                "git checkout",
+                ["git", "-C", str(workdir), "checkout", "--force", "-B", git_cfg.branch],
+            ),
+            (
+                "git pull",
+                [
+                    "git", "-C", str(workdir), "pull", "--ff-only", "--progress",
+                    "origin", git_cfg.branch,
+                ],
+            ),
+        ])
+    for label, cmd in steps:
+        if label == "git checkout" and branch_changed:
+            _clear_build_outputs(git_cfg.workspace_root.resolve(), workdir, build_outputs)
+        result = _run_git(cmd, git_cfg)
+        if result.returncode != 0:
+            detail = (result.stdout or result.stderr).strip()
+            if label == "git checkout" and branch_changed:
+                detail += ". If an ignored file blocks checkout, remove the configured state file and rerun to force a clean clone"
+            raise RuntimeError(f"{label} failed: {detail}")
+
+
+def _clear_build_outputs(
+    workspace_root: Path,
+    workdir: Path,
+    build_outputs: list[Path],
+) -> None:
+    for build_output in build_outputs:
+        output = build_output.resolve()
+        if workspace_root not in output.parents:
+            continue
+        if output == workdir or output in workdir.parents:
+            raise RuntimeError(f"Refusing to remove build output containing the repository: {output}")
+        if output.is_dir():
+            shutil.rmtree(output)
+        elif output.exists():
+            output.unlink()
+
+
+def sync_workdir(
+    git_cfg: GitConfig,
+    first_run: bool,
+    branch_changed: bool,
+    build_outputs: list[Path] | None = None,
+) -> None:
+    """Bring the workspace to the configured branch tip.
+
+    Clone only during initialization. Later runs require the existing clone;
+    a branch change fetches and checks out the requested remote branch.
+    """
     workdir = git_cfg.workdir.resolve()
     workspace_root = git_cfg.workspace_root.resolve()
     validate_workspace_root(workspace_root)
     if workspace_root not in workdir.parents:
         raise RuntimeError(
             f"Git work directory {workdir} must be inside workspace root {workspace_root}"
+        )
+
+    if not first_run and _is_reusable_clone(workdir, git_cfg):
+        logger.info(
+            "Updating existing clone in %s (branch=%s, branch_changed=%s)",
+            workdir,
+            git_cfg.branch,
+            branch_changed,
+        )
+        _update_existing_clone(
+            workdir,
+            git_cfg,
+            branch_changed,
+            build_outputs or [],
+        )
+        return
+
+    if not first_run:
+        logger.warning(
+            "Saved state exists, but the workspace is missing or belongs to another "
+            "repository; recovering with a clean clone"
         )
 
     logger.info("Clearing complete workspace %s", workspace_root)

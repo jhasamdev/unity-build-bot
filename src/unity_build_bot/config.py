@@ -12,6 +12,7 @@ import yaml
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _BUILD_DESCRIPTION_FIELDS = {"version", "branch", "short_sha", "targets"}
+CLEAN_BUILD_MODES = ("never", "always", "on_previous_failure")
 
 
 def _expand_env(value: Any, variables: dict[str, str]) -> Any:
@@ -55,6 +56,7 @@ class UnityConfig:
     build_method: str
     builds: list[UnityBuildConfig]
     extra_args: list[str] = field(default_factory=list)
+    clean_build: str = "never"
 
 
 @dataclass
@@ -94,6 +96,7 @@ class JobConfig:
     mode: str = "build_and_upload"
     steam_upload_retries: int = 3
     steam_upload_retry_delay_seconds: int = 30
+    prevent_sleep: bool = True
 
 
 @dataclass
@@ -288,6 +291,14 @@ def load_config(path: str | Path) -> Config:
         raise ValueError(
             "job.steam_upload_retry_delay_seconds must be a non-negative integer"
         )
+    prevent_sleep = job_raw.get("prevent_sleep", True)
+    if not isinstance(prevent_sleep, bool):
+        raise ValueError("job.prevent_sleep must be true or false")
+    clean_build = unity_raw.get("clean_build", "never")
+    if clean_build not in CLEAN_BUILD_MODES:
+        raise ValueError(
+            "unity.clean_build must be one of: " + ", ".join(CLEAN_BUILD_MODES)
+        )
 
     repo_url = _required(git_raw, "repo_url", "git")
     auth_token_env = git_raw.get("auth_token_env")
@@ -315,6 +326,7 @@ def load_config(path: str | Path) -> Config:
             build_method=_required(unity_raw, "build_method", "unity"),
             builds=builds,
             extra_args=unity_raw.get("extra_args", []),
+            clean_build=clean_build,
         ),
         versioning=VersioningConfig(
             version_file=versioning_raw.get("version_file", "version.txt"),

@@ -107,6 +107,19 @@ class MultiTargetConfigTests(TestCase):
         with self.assertRaisesRegex(ValueError, "UNITY_BUILD_BOT_MISSING_TOKEN"):
             self._load(data)
 
+    def test_performance_options_default_to_cached_builds(self):
+        config = self._load(_config_data())
+
+        self.assertEqual("never", config.unity.clean_build)
+        self.assertTrue(config.job.prevent_sleep)
+
+    def test_unknown_clean_build_mode_is_rejected(self):
+        data = _config_data()
+        data["unity"]["clean_build"] = "sometimes"
+
+        with self.assertRaisesRegex(ValueError, "unity.clean_build must be one of"):
+            self._load(data)
+
     def test_legacy_config_normalizes_to_default_build(self):
         config = self._load(_config_data())
 
@@ -191,7 +204,58 @@ class MultiTargetConfigTests(TestCase):
 
 
 class MultiTargetRunTests(TestCase):
-    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
+    def test_workspace_sync_decision_uses_state_initialization_and_branch(self):
+        self.assertEqual((True, False), cli._workspace_sync_decision(False, None, "main"))
+        self.assertEqual((False, True), cli._workspace_sync_decision(True, "develop", "main"))
+        self.assertEqual((False, False), cli._workspace_sync_decision(True, "main", "main"))
+        self.assertEqual((True, False), cli._workspace_sync_decision(True, None, "main"))
+
+    def test_unchanged_remote_still_syncs_workspace_without_building(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_file = root / "state.json"
+            state_file.touch()
+            config = SimpleNamespace(
+                git=SimpleNamespace(
+                    auth_token=None,
+                    branch="main",
+                    workdir=root / "repo",
+                    workspace_root=root / "workspace",
+                ),
+                unity=SimpleNamespace(builds=[], clean_build="never"),
+                logging=SimpleNamespace(
+                    log_dir=root / "logs",
+                    level="INFO",
+                    show_activity_window=False,
+                ),
+                state=SimpleNamespace(state_file=state_file),
+                job=SimpleNamespace(mode="build_and_upload", prevent_sleep=False),
+            )
+            state = SimpleNamespace(
+                last_built_sha="same-sha",
+                last_branch="main",
+                last_status="success",
+                save=Mock(),
+            )
+            with (
+                patch("unity_build_bot.cli.load_config", return_value=config),
+                patch("unity_build_bot.cli.State.load", return_value=state),
+                patch("unity_build_bot.cli.setup_logging"),
+                patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value=None),
+                patch("unity_build_bot.cli.git_watcher.sync_workdir") as sync_mock,
+                patch("unity_build_bot.cli.unity_builder.build") as build_mock,
+            ):
+                result = cli.run("config.yaml")
+
+        self.assertEqual(0, result)
+        sync_mock.assert_called_once_with(
+            config.git,
+            first_run=False,
+            branch_changed=False,
+            build_outputs=[],
+        )
+        build_mock.assert_not_called()
+
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.steam_uploader.upload")
@@ -212,13 +276,12 @@ class MultiTargetRunTests(TestCase):
         upload_mock,
         setup_logging_mock,
         state_load_mock,
-        _remove_workspace_mock,
     ):
         macos = SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True)
         windows = SimpleNamespace(id="windows", output_subdir=Path("build/windows"), enabled=False)
         config = SimpleNamespace(
             git=SimpleNamespace(branch="main", workdir=Path("repo"), workspace_root=Path("workspace")),
-            unity=SimpleNamespace(builds=[macos, windows]),
+            unity=SimpleNamespace(builds=[macos, windows], clean_build="never"),
             steam=Mock(),
             versioning=SimpleNamespace(
                 version_file="version.txt",
@@ -251,7 +314,7 @@ class MultiTargetRunTests(TestCase):
         self.assertEqual(0, result)
         self.assertEqual(
             [
-                call(config.unity, macos, config.git.workdir, "1.2.4.abcdef1"),
+                call(config.unity, macos, config.git.workdir, "1.2.4.abcdef1", clean_build=False),
             ],
             build_mock.call_args_list,
         )
@@ -261,6 +324,12 @@ class MultiTargetRunTests(TestCase):
         self.assertEqual("1.2.4.abcdef1", state.last_version)
         self.assertEqual("abcdef123456", state.last_built_sha)
         self.assertEqual("main", state.last_branch)
+        _sync_workdir_mock.assert_called_once_with(
+            config.git,
+            first_run=True,
+            branch_changed=False,
+            build_outputs=[macos.output_subdir],
+        )
         upload_mock.assert_called_once_with(
             config.steam,
             {"macos": Path("build/macos")},
@@ -275,12 +344,15 @@ class MultiTargetRunTests(TestCase):
         logger = setup_logging_mock.return_value
         logger.info.assert_any_call("Git check started (branch=%s)", "main")
         logger.info.assert_any_call("Git check finished (new_commit=%s)", True)
-        logger.info.assert_any_call("Workspace sync started")
+        logger.info.assert_any_call(
+            "Workspace sync started (first_run=%s, branch_changed=%s)",
+            True,
+            False,
+        )
         logger.info.assert_any_call("Workspace sync finished")
         logger.info.assert_any_call("Run finished successfully: version=%s sha=%s", "1.2.4.abcdef1", "abcdef123456")
         logger.exception.assert_not_called()
 
-    @patch("unity_build_bot.cli.git_watcher.remove_workspace")
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")
     @patch("unity_build_bot.cli.unity_builder.build", side_effect=RuntimeError("build broke"))
@@ -297,13 +369,12 @@ class MultiTargetRunTests(TestCase):
         _build_mock,
         setup_logging_mock,
         state_load_mock,
-        _remove_workspace_mock,
     ):
         config = SimpleNamespace(
             git=SimpleNamespace(branch="develop", workdir=Path("repo"), workspace_root=Path("workspace")),
             unity=SimpleNamespace(builds=[
                 SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True),
-            ]),
+            ], clean_build="on_previous_failure"),
             steam=Mock(),
             versioning=SimpleNamespace(
                 version_file="version.txt",
@@ -329,15 +400,23 @@ class MultiTargetRunTests(TestCase):
         load_config_mock.return_value = config
         state_load_mock.return_value = state
 
-        result = cli.run("config.yaml")
+        with patch("pathlib.Path.is_file", return_value=True):
+            result = cli.run("config.yaml")
 
         self.assertEqual(1, result)
+        _sync_workdir_mock.assert_called_once_with(
+            config.git,
+            first_run=False,
+            branch_changed=False,
+            build_outputs=[config.unity.builds[0].output_subdir],
+        )
         has_new_commit_mock.assert_called_once_with(config.git, None)
         self.assertEqual("1234567890abcdef", state.last_built_sha)
         self.assertEqual("2.0.0.1234567", state.last_version)
         self.assertEqual("develop", state.last_branch)
         self.assertEqual("failed: build broke", state.last_status)
         state.save.assert_called_once_with(config.state.state_file)
+        self.assertTrue(_build_mock.call_args.kwargs["clean_build"])
         setup_logging_mock.return_value.exception.assert_any_call(
             "%s failed; run aborted: %s", "Unity build macos", _build_mock.side_effect
         )

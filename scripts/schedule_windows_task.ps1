@@ -57,6 +57,10 @@ $action = New-ScheduledTaskAction -Execute $PythonPath `
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Force
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force
 
 Write-Host "Registered scheduled task '$TaskName' for '$ConfigPath' running every $IntervalMinutes minute(s)."

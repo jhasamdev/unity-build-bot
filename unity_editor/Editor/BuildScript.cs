@@ -13,6 +13,7 @@ public static class BuildScript
         string version = GetArg("-customBuildVersion");
         string buildTargetArg = GetArg("-buildTarget");
         string buildName = GetArg("-customBuildName") ?? "Game";
+        bool cleanBuild = string.Equals(GetArg("-customCleanBuild"), "true", StringComparison.OrdinalIgnoreCase);
 
         if (string.IsNullOrEmpty(outputDir))
             throw new Exception("Missing -customBuildOutput argument");
@@ -36,8 +37,12 @@ public static class BuildScript
             scenes = scenes,
             locationPathName = locationPathName,
             target = target,
-            options = BuildOptions.None,
+            // CleanBuildCache discards Library/Bee (incremental player + IL2CPP
+            // cache) but keeps the asset import cache. Requires Unity 2021.2+.
+            options = cleanBuild ? BuildOptions.CleanBuildCache : BuildOptions.None,
         };
+
+        Console.WriteLine($"Build starting: target={target}, version={version}, cleanBuild={cleanBuild}");
 
         var report = BuildPipeline.BuildPlayer(options);
         var summary = report.summary;

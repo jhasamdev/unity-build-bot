@@ -20,6 +20,11 @@ unity:
   project_subpath: "."                 # Unity project folder relative to workdir
   build_method: "BuildScript.PerformBuild"
   extra_args: []                       # e.g. ["-nographics"]
+  # never | always | on_previous_failure.
+  # A clean build discards Unity's incremental player/IL2CPP cache (Library/Bee)
+  # and is much slower; the asset import cache is kept either way.
+  # "on_previous_failure" only cleans when the last recorded run failed.
+  clean_build: "never"
   builds:
     - id: "macos"
       enabled: true                     # false to skip macOS
@@ -43,6 +48,7 @@ job:
   mode: "build_and_upload"             # build_and_upload | upload_only
   steam_upload_retries: 3               # additional attempts after a failed upload
   steam_upload_retry_delay_seconds: 30
+  prevent_sleep: true                   # block idle sleep/App Nap while the job runs
 
 steam:
   # Windows: C:/steamcmd/steamcmd.exe and C:/steamcmd/config/config.vdf

@@ -14,6 +14,7 @@ unity:
   project_subpath: "."
   build_method: "BuildScript.PerformBuild"
   extra_args: []
+  clean_build: "never"                 # never | always | on_previous_failure
   builds:
     - id: "macos"
       enabled: true
@@ -32,6 +33,7 @@ job:
   mode: "build_and_upload"
   steam_upload_retries: 3
   steam_upload_retry_delay_seconds: 30
+  prevent_sleep: true                  # block idle sleep/App Nap while the job runs
 
 steam:
   steamcmd_path: "~/steamcmd/steamcmd.sh"

@@ -1,16 +1,64 @@
 """Run child processes while streaming their output to the activity log."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 from unity_build_bot.logging_utils import redact
 
 logger = logging.getLogger("unity_build_bot")
 _SECRET_OPTION = re.compile(r"(?:password|passwd|token|secret|api[-_]?key|authorization|credential)", re.I)
+
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+@contextlib.contextmanager
+def keep_awake(enabled: bool = True):
+    """Stop the machine from sleeping or throttling while a long job runs."""
+    if not enabled:
+        yield
+        return
+    if sys.platform == "darwin":
+        try:
+            blocker = subprocess.Popen(
+                ["caffeinate", "-dimsu"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            logger.warning("Could not prevent sleep: %s", exc)
+            yield
+            return
+        logger.info("Sleep prevention active (caffeinate)")
+        try:
+            yield
+        finally:
+            blocker.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                blocker.wait(timeout=5)
+        return
+    if sys.platform == "win32":
+        import ctypes
+
+        set_state = ctypes.windll.kernel32.SetThreadExecutionState
+        if not set_state(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED):
+            logger.warning("Could not prevent sleep: SetThreadExecutionState failed")
+            yield
+            return
+        logger.info("Sleep prevention active (SetThreadExecutionState)")
+        try:
+            yield
+        finally:
+            set_state(_ES_CONTINUOUS)
+        return
+    logger.debug("Sleep prevention is supported only on macOS and Windows")
+    yield
 
 
 def safe_command(cmd: list[str]) -> str:
