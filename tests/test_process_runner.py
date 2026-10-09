@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from unity_build_bot.process_runner import run_streaming, safe_command
+from unity_build_bot.process_runner import keep_awake, run_streaming, safe_command
 
 
 class ProcessRunnerTests(TestCase):
@@ -52,3 +52,39 @@ class ProcessRunnerTests(TestCase):
             self.assertNotIn("hunter2", output_file.read_text())
             self.assertNotIn("private", output_file.read_text())
             self.assertIn("****", output_file.read_text())
+
+class KeepAwakeTests(TestCase):
+    def test_disabled_keep_awake_starts_no_helper(self):
+        with patch("unity_build_bot.process_runner.subprocess.Popen") as popen_mock:
+            with keep_awake(False):
+                pass
+
+        popen_mock.assert_not_called()
+
+    def test_macos_keep_awake_stops_helper_on_exit(self):
+        with (
+            patch("unity_build_bot.process_runner.sys.platform", "darwin"),
+            patch("unity_build_bot.process_runner.subprocess.Popen") as popen_mock,
+        ):
+            with keep_awake(True):
+                popen_mock.assert_called_once()
+                self.assertEqual(
+                    ["caffeinate", "-dimsu"], popen_mock.call_args.args[0]
+                )
+                popen_mock.return_value.terminate.assert_not_called()
+
+        popen_mock.return_value.terminate.assert_called_once()
+
+    def test_keep_awake_survives_a_missing_helper(self):
+        with (
+            patch("unity_build_bot.process_runner.sys.platform", "darwin"),
+            patch(
+                "unity_build_bot.process_runner.subprocess.Popen",
+                side_effect=OSError("not found"),
+            ),
+            patch.object(logging.getLogger("unity_build_bot"), "warning") as warn_mock,
+        ):
+            with keep_awake(True):
+                pass
+
+        warn_mock.assert_called_once()

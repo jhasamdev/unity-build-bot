@@ -15,6 +15,7 @@ def build(
     build_cfg: UnityBuildConfig,
     repo_workdir: Path,
     version: str,
+    clean_build: bool = False,
 ) -> None:
     project_path = (repo_workdir / unity_cfg.project_subpath).resolve()
     output_dir = build_cfg.output_subdir
@@ -32,15 +33,17 @@ def build(
         "-customBuildOutput", str(output_dir),
         "-customBuildVersion", version,
         "-customBuildName", build_cfg.build_name,
+        "-customCleanBuild", "true" if clean_build else "false",
         "-logFile", "-",
         *unity_cfg.extra_args,
     ]
 
     logger.info(
-        "Starting Unity build (id=%s, target=%s, version=%s)",
+        "Starting Unity build (id=%s, target=%s, version=%s, clean=%s)",
         build_cfg.id,
         build_cfg.build_target,
         version,
+        clean_build,
     )
     result = run_streaming(cmd, output_file=editor_log)
 
