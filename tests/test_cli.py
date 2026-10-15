@@ -42,6 +42,33 @@ class DoctorTests(TestCase):
         self.assertEqual(0, result)
         self.assertTrue(any("Setup checks passed." in str(call) for call in print_mock.call_args_list))
 
+    def test_doctor_skips_steam_checks_for_build_only_mode(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            unity = root / "Unity"
+            unity.touch()
+            config = SimpleNamespace(
+                git=SimpleNamespace(
+                    workspace_root=root / "workspace",
+                    repo_url="https://github.com/example/game.git",
+                    branch="main",
+                ),
+                unity=SimpleNamespace(executable_path=unity),
+                steam=SimpleNamespace(),
+                job=SimpleNamespace(mode="build_only"),
+            )
+
+            with (
+                patch("unity_build_bot.cli.load_config", return_value=config),
+                patch("unity_build_bot.cli.shutil.which", return_value="/usr/bin/git"),
+                patch("unity_build_bot.cli.git_watcher.remote_head_sha", return_value="abc"),
+                patch("builtins.print") as print_mock,
+            ):
+                result = cli.doctor("config.yaml")
+
+        self.assertEqual(0, result)
+        self.assertTrue(any("Setup checks passed." in str(call) for call in print_mock.call_args_list))
+
 
 class UploadLoggingTests(TestCase):
     @patch("unity_build_bot.cli.State.load", side_effect=ValueError("invalid state"))

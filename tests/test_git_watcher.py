@@ -1,5 +1,6 @@
 from pathlib import Path
-from subprocess import CompletedProcess
+import os
+from subprocess import CompletedProcess, run
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
@@ -7,10 +8,90 @@ from unittest.mock import patch
 from unity_build_bot.config import GitConfig
 from unity_build_bot.git_watcher import (
     _clear_workspace,
+    latest_tag,
     remote_head_sha,
     remove_workspace,
     sync_workdir,
 )
+
+
+class LatestTagTests(TestCase):
+    @patch("unity_build_bot.git_watcher._run")
+    def test_fetches_tags_with_authentication_before_lookup(self, run_mock):
+        run_mock.side_effect = [
+            CompletedProcess([], 0, "", ""),
+            CompletedProcess([], 0, "v0.4-pre-demo\n", ""),
+        ]
+        config = GitConfig(
+            "https://github.com/example/repo.git", "main",
+            Path("repo"), Path("workspace"), auth_token="secret-token",
+        )
+
+        self.assertEqual("v0.4-pre-demo", latest_tag(config))
+
+        fetch, lookup = run_mock.call_args_list
+        self.assertEqual(
+            ["git", "-C", "repo", "fetch", "--tags", "origin"],
+            fetch.args[0],
+        )
+        env = fetch.kwargs["env"]
+        auth_index = int(env["GIT_CONFIG_COUNT"]) - 1
+        self.assertIn("AUTHORIZATION: basic ", env[f"GIT_CONFIG_VALUE_{auth_index}"])
+        self.assertIn("--sort=-creatordate", lookup.args[0])
+        self.assertIn("refs/tags/", lookup.args[0])
+
+    @patch("unity_build_bot.git_watcher._run")
+    def test_reports_fetch_lookup_and_missing_tag_errors(self, run_mock):
+        config = GitConfig("example", "main", Path("repo"), Path("workspace"))
+        success = CompletedProcess([], 0, "", "")
+        failure = CompletedProcess([], 1, "", "Git error")
+        for results, message in (
+            ([failure], "git fetch tags failed: Git error"),
+            ([success, failure], "git tag lookup failed: Git error"),
+            ([success, success], "requires at least one Git tag"),
+        ):
+            with self.subTest(message=message):
+                run_mock.side_effect = results
+                with self.assertRaisesRegex(RuntimeError, message):
+                    latest_tag(config)
+
+    def test_fetches_new_tags_and_uses_creator_date_across_branches(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            clone = root / "clone"
+            env = os.environ.copy()
+            env.update({
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+                "GIT_AUTHOR_DATE": "2025-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_DATE": "2025-01-01T00:00:00+00:00",
+            })
+
+            def git(*args):
+                return run(
+                    ["git", *args], env=env, check=True, capture_output=True, text=True,
+                ).stdout.strip()
+
+            git("init", "--initial-branch=main", str(source))
+            git("-C", str(source), "commit", "--allow-empty", "-m", "Initial")
+            git("-C", str(source), "tag", "v99.0")
+            git("clone", str(source), str(clone))
+            git("-C", str(source), "checkout", "-b", "demo")
+            env["GIT_AUTHOR_DATE"] = "2025-02-01T00:00:00+00:00"
+            env["GIT_COMMITTER_DATE"] = "2025-02-01T00:00:00+00:00"
+            git("-C", str(source), "commit", "--allow-empty", "-m", "Demo")
+            git("-C", str(source), "tag", "v0.3-lightweight")
+            config = GitConfig(str(source), "main", clone, root)
+
+            self.assertEqual("v0.3-lightweight", latest_tag(config))
+
+            env["GIT_COMMITTER_DATE"] = "2025-03-01T00:00:00+00:00"
+            git("-C", str(source), "tag", "-a", "v0.4-pre-demo", "-m", "Demo tag")
+            self.assertEqual("v0.4-pre-demo", latest_tag(config))
+            self.assertEqual("main", git("-C", str(clone), "branch", "--show-current"))
 
 
 class SyncWorkdirTests(TestCase):

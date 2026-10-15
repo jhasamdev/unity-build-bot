@@ -131,6 +131,19 @@ class MultiTargetConfigTests(TestCase):
         self.assertEqual("build_and_upload", config.job.mode)
         self.assertFalse(config.versioning.append_short_commit_hash)
         self.assertEqual(7, config.versioning.short_commit_hash_length)
+        self.assertEqual("file", config.versioning.mode)
+
+    def test_versioning_mode_loads_and_rejects_invalid_values(self):
+        data = _config_data()
+        for mode in ("file", "tag"):
+            with self.subTest(mode=mode):
+                data["versioning"] = {"mode": mode}
+                self.assertEqual(mode, self._load(data).versioning.mode)
+        for mode in ("unknown", "", None, [], True):
+            with self.subTest(mode=mode):
+                data["versioning"] = {"mode": mode}
+                with self.assertRaisesRegex(ValueError, "versioning.mode"):
+                    self._load(data)
 
     def test_versioning_config_controls_commit_hash_suffix(self):
         data = _config_data()
@@ -162,6 +175,14 @@ class MultiTargetConfigTests(TestCase):
         config = self._load(data)
 
         self.assertEqual("upload_only", config.job.mode)
+
+    def test_build_only_mode_loads_from_config(self):
+        data = _config_data()
+        data["job"] = {"mode": "build_only"}
+
+        config = self._load(data)
+
+        self.assertEqual("build_only", config.job.mode)
 
     def test_multi_target_config_supports_enabled_selection(self):
         data = _config_data()
@@ -204,6 +225,74 @@ class MultiTargetConfigTests(TestCase):
 
 
 class MultiTargetRunTests(TestCase):
+    def test_tag_mode_builds_and_uploads_without_reading_or_writing_version_file(self):
+        for job_mode in ("build_only", "build_and_upload"):
+            with self.subTest(job_mode=job_mode), TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                data = _config_data()
+                data["versioning"] = {
+                    "mode": "tag",
+                    "auto_increment": True,
+                    "append_short_commit_hash": False,
+                }
+                data["job"] = {"mode": job_mode, "prevent_sleep": False}
+                data["state"] = {"state_file": str(root / "state.json")}
+                config_path = root / "config.yaml"
+                config_path.write_text(yaml.safe_dump(data))
+                config = load_config(config_path)
+
+                with (
+                    patch.object(cli, "setup_logging"),
+                    patch.object(cli.git_watcher, "has_new_commit", return_value="348c1f1234567"),
+                    patch.object(cli.git_watcher, "sync_workdir"),
+                    patch.object(cli.git_watcher, "latest_tag", return_value="v0.4-pre-demo") as tag_mock,
+                    patch.object(cli.version_file, "read_version") as read_mock,
+                    patch.object(cli.version_file, "write_version") as write_mock,
+                    patch.object(cli.unity_builder, "build") as build_mock,
+                    patch.object(cli.steam_uploader, "upload") as upload_mock,
+                ):
+                    self.assertEqual(0, cli.run(str(config_path)))
+
+                tag_mock.assert_called_once_with(config.git)
+                read_mock.assert_not_called()
+                write_mock.assert_not_called()
+                build_mock.assert_called_once_with(
+                    config.unity, config.unity.builds[0], config.git.workdir,
+                    "v0.4-pre-demo-348c1f1", clean_build=False,
+                )
+                state = cli.State.load(config.state.state_file)
+                self.assertEqual("v0.4-pre-demo-348c1f1", state.last_version)
+                self.assertEqual("success", state.last_status)
+                if job_mode == "build_only":
+                    upload_mock.assert_not_called()
+                else:
+                    self.assertEqual(
+                        "v0.4-pre-demo-348c1f1",
+                        upload_mock.call_args.kwargs["build_metadata"]["version"],
+                    )
+
+    def test_tag_lookup_failure_aborts_before_build_and_persists_failure(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data = _config_data()
+            data["versioning"] = {"mode": "tag"}
+            data["job"] = {"mode": "build_only", "prevent_sleep": False}
+            data["state"] = {"state_file": str(root / "state.json")}
+            config_path = root / "config.yaml"
+            config_path.write_text(yaml.safe_dump(data))
+            with (
+                patch.object(cli, "setup_logging") as logging_mock,
+                patch.object(cli.git_watcher, "has_new_commit", return_value="348c1f1234567"),
+                patch.object(cli.git_watcher, "sync_workdir"),
+                patch.object(cli.git_watcher, "latest_tag", side_effect=RuntimeError("no tags")),
+                patch.object(cli.unity_builder, "build") as build_mock,
+            ):
+                self.assertEqual(1, cli.run(str(config_path)))
+            build_mock.assert_not_called()
+            logging_mock.return_value.exception.assert_called_once()
+            state = cli.State.load(root / "state.json")
+            self.assertEqual("failed: no tags", state.last_status)
+
     def test_workspace_sync_decision_uses_state_initialization_and_branch(self):
         self.assertEqual((True, False), cli._workspace_sync_decision(False, None, "main"))
         self.assertEqual((False, True), cli._workspace_sync_decision(True, "develop", "main"))
@@ -352,6 +441,78 @@ class MultiTargetRunTests(TestCase):
         logger.info.assert_any_call("Workspace sync finished")
         logger.info.assert_any_call("Run finished successfully: version=%s sha=%s", "1.2.4.abcdef1", "abcdef123456")
         logger.exception.assert_not_called()
+
+    @patch("unity_build_bot.cli.State.load")
+    @patch("unity_build_bot.cli.setup_logging")
+    @patch("unity_build_bot.cli.steam_uploader.upload")
+    @patch("unity_build_bot.cli.unity_builder.build")
+    @patch("unity_build_bot.cli.version_file.write_version")
+    @patch("unity_build_bot.cli.version_file.read_version", return_value="1.2.3")
+    @patch("unity_build_bot.cli.git_watcher.sync_workdir")
+    @patch("unity_build_bot.cli.git_watcher.has_new_commit", return_value="abcdef123456")
+    @patch("unity_build_bot.cli.load_config")
+    def test_build_only_mode_builds_and_saves_without_uploading(
+        self,
+        load_config_mock,
+        _has_new_commit_mock,
+        _sync_workdir_mock,
+        _read_version_mock,
+        write_version_mock,
+        build_mock,
+        upload_mock,
+        setup_logging_mock,
+        state_load_mock,
+    ):
+        macos = SimpleNamespace(id="macos", output_subdir=Path("build/macos"), enabled=True)
+        config = SimpleNamespace(
+            git=SimpleNamespace(branch="main", workdir=Path("repo"), workspace_root=Path("workspace")),
+            unity=SimpleNamespace(builds=[macos], clean_build="never"),
+            versioning=SimpleNamespace(
+                version_file="version.txt",
+                auto_increment=True,
+                bump_part="patch",
+                append_short_commit_hash=True,
+                short_commit_hash_length=7,
+            ),
+            logging=SimpleNamespace(
+                log_dir=Path("logs"),
+                level="INFO",
+                show_activity_window=False,
+            ),
+            state=SimpleNamespace(state_file=Path("state.json")),
+            job=SimpleNamespace(mode="build_only"),
+        )
+        state = SimpleNamespace(
+            last_built_sha="old-sha",
+            last_version=None,
+            last_branch=None,
+            last_status=None,
+            last_run_at=None,
+            save=Mock(),
+        )
+        load_config_mock.return_value = config
+        state_load_mock.return_value = state
+
+        result = cli.run("config.yaml")
+
+        self.assertEqual(0, result)
+        build_mock.assert_called_once_with(
+            config.unity,
+            macos,
+            config.git.workdir,
+            "1.2.4.abcdef1",
+            clean_build=False,
+        )
+        upload_mock.assert_not_called()
+        write_version_mock.assert_called_once_with(
+            config.git.workdir / "version.txt", "1.2.4"
+        )
+        self.assertEqual("success", state.last_status)
+        self.assertEqual("1.2.4.abcdef1", state.last_version)
+        state.save.assert_called_once_with(config.state.state_file)
+        setup_logging_mock.return_value.info.assert_any_call(
+            "Job mode is build_only; skipping Steam upload"
+        )
 
     @patch("unity_build_bot.cli.State.load")
     @patch("unity_build_bot.cli.setup_logging")

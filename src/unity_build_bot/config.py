@@ -66,6 +66,7 @@ class VersioningConfig:
     bump_part: str
     append_short_commit_hash: bool = False
     short_commit_hash_length: int = 7
+    mode: str = "file"
 
 
 @dataclass
@@ -268,6 +269,9 @@ def load_config(path: str | Path) -> Config:
     if not isinstance(show_activity_window, bool):
         raise ValueError("logging.show_activity_window must be true or false")
     append_short_commit_hash = versioning_raw.get("append_short_commit_hash", False)
+    versioning_mode = versioning_raw.get("mode", "file")
+    if versioning_mode not in ("file", "tag"):
+        raise ValueError("versioning.mode must be 'file' or 'tag'")
     if not isinstance(append_short_commit_hash, bool):
         raise ValueError("versioning.append_short_commit_hash must be true or false")
     short_commit_hash_length = versioning_raw.get("short_commit_hash_length", 7)
@@ -281,8 +285,10 @@ def load_config(path: str | Path) -> Config:
     if workspace_root not in workdir.parents:
         raise ValueError("git.workdir must be inside git.workspace_root")
     job_mode = job_raw.get("mode", "build_and_upload")
-    if job_mode not in {"build_and_upload", "upload_only"}:
-        raise ValueError("job.mode must be 'build_and_upload' or 'upload_only'")
+    if job_mode not in {"build_and_upload", "build_only", "upload_only"}:
+        raise ValueError(
+            "job.mode must be 'build_and_upload', 'build_only', or 'upload_only'"
+        )
     steam_upload_retries = job_raw.get("steam_upload_retries", 3)
     if type(steam_upload_retries) is not int or steam_upload_retries < 0:
         raise ValueError("job.steam_upload_retries must be a non-negative integer")
@@ -329,6 +335,7 @@ def load_config(path: str | Path) -> Config:
             clean_build=clean_build,
         ),
         versioning=VersioningConfig(
+            mode=versioning_mode,
             version_file=versioning_raw.get("version_file", "version.txt"),
             auto_increment=versioning_raw.get("auto_increment", False),
             bump_part=versioning_raw.get("bump_part", "patch"),

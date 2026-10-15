@@ -110,6 +110,32 @@ def has_new_commit(git_cfg: GitConfig, last_built_sha: str | None) -> str | None
     return None
 
 
+def latest_tag(git_cfg: GitConfig) -> str:
+    """Fetch tags and return the newest by Git's creator date."""
+    result = _run_git(
+        ["git", "-C", str(git_cfg.workdir), "fetch", "--tags", "origin"],
+        git_cfg,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git fetch tags failed: {(result.stdout or result.stderr).strip()}"
+        )
+    result = _run([
+        "git", "-C", str(git_cfg.workdir), "for-each-ref",
+        "--sort=-creatordate", "--count=1", "--format=%(refname:strip=2)",
+        "refs/tags/",
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git tag lookup failed: {(result.stdout or result.stderr).strip()}"
+        )
+    tag = result.stdout.strip()
+    if not tag:
+        raise RuntimeError("Tag versioning requires at least one Git tag")
+    logger.info("Latest Git tag: %s", tag)
+    return tag
+
+
 def _is_reusable_clone(workdir: Path, git_cfg: GitConfig) -> bool:
     """True when workdir already holds a clone of the configured remote."""
     if not (workdir / ".git").exists():

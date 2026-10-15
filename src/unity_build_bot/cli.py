@@ -134,19 +134,24 @@ def run(config_path: str) -> int:
 
             stage = "Version preparation"
             logger.info("Version preparation started")
-            version_path = cfg.git.workdir / cfg.versioning.version_file
-            base_version = version_file.read_version(version_path)
-            if cfg.versioning.auto_increment:
-                base_version = version_file.bump_version(
-                    base_version, cfg.versioning.bump_part
-                )
-            version = base_version
-            if cfg.versioning.append_short_commit_hash:
-                version = version_file.append_short_commit_hash(
-                    base_version,
-                    new_sha,
-                    cfg.versioning.short_commit_hash_length,
-                )
+            versioning_mode = getattr(cfg.versioning, "mode", "file")
+            if versioning_mode == "tag":
+                base_version = git_watcher.latest_tag(cfg.git)
+                version = f"{base_version}-{new_sha[:cfg.versioning.short_commit_hash_length]}"
+            else:
+                version_path = cfg.git.workdir / cfg.versioning.version_file
+                base_version = version_file.read_version(version_path)
+                if cfg.versioning.auto_increment:
+                    base_version = version_file.bump_version(
+                        base_version, cfg.versioning.bump_part
+                    )
+                version = base_version
+                if cfg.versioning.append_short_commit_hash:
+                    version = version_file.append_short_commit_hash(
+                        base_version,
+                        new_sha,
+                        cfg.versioning.short_commit_hash_length,
+                    )
             state.last_version = version
             logger.info("Version preparation finished (version=%s)", version)
 
@@ -170,21 +175,24 @@ def run(config_path: str) -> int:
                     clean_build=clean_build,
                 )
                 content_roots[build_cfg.id] = build_cfg.output_subdir
-            stage = "Steam upload"
-            _upload_with_retries(
-                cfg,
-                logger,
-                content_roots,
-                cfg.git.workdir,
-                build_metadata={
-                    "version": version,
-                    "branch": cfg.git.branch,
-                    "short_sha": new_sha[:cfg.versioning.short_commit_hash_length],
-                    "targets": ",".join(content_roots),
-                },
-            )
+            if cfg.job.mode == "build_only":
+                logger.info("Job mode is build_only; skipping Steam upload")
+            else:
+                stage = "Steam upload"
+                _upload_with_retries(
+                    cfg,
+                    logger,
+                    content_roots,
+                    cfg.git.workdir,
+                    build_metadata={
+                        "version": version,
+                        "branch": cfg.git.branch,
+                        "short_sha": new_sha[:cfg.versioning.short_commit_hash_length],
+                        "targets": ",".join(content_roots),
+                    },
+                )
 
-            if cfg.versioning.auto_increment:
+            if versioning_mode == "file" and cfg.versioning.auto_increment:
                 stage = "Version file update"
                 logger.info("Version file update started")
                 version_file.write_version(version_path, base_version)
@@ -342,12 +350,13 @@ def doctor(config_path: str) -> int:
             str(cfg.unity.executable_path),
         )
 
-    report("SteamCMD", cfg.steam.steamcmd_path.is_file(), str(cfg.steam.steamcmd_path))
-    report(
-        "Steam login session",
-        cfg.steam.config_vdf_path.is_file(),
-        str(cfg.steam.config_vdf_path),
-    )
+    if cfg.job.mode != "build_only":
+        report("SteamCMD", cfg.steam.steamcmd_path.is_file(), str(cfg.steam.steamcmd_path))
+        report(
+            "Steam login session",
+            cfg.steam.config_vdf_path.is_file(),
+            str(cfg.steam.config_vdf_path),
+        )
 
     if cfg.job.mode == "upload_only":
         for build_cfg in cfg.unity.builds:
