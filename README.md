@@ -13,12 +13,15 @@ flowchart TD
   B -- Upload only --> C[Validate existing build outputs]
   C --> D[Upload to Steam]
   D --> E[Finish without changing build state]
-  B -- Build and upload --> F[Check remote branch commit]
+  B -- Build only --> F[Check remote branch commit]
+  B -- Build and upload --> F
   F -- Same commit, last run succeeded --> G[Skip build]
   F -- Build needed or retry --> H[Clear workspace and clone branch]
   H --> I[Prepare version and build enabled Unity targets]
-  I --> J[Upload to Steam with retries]
-  J --> K[Save version and successful build state]
+  I --> J{Job mode?}
+  J -- Build only --> K[Save version and successful build state]
+  J -- Build and upload --> L[Upload to Steam with retries]
+  L --> K
   F -. Failure .-> L[Record failed run]
   H -. Failure .-> L
   I -. Failure .-> L
@@ -56,7 +59,8 @@ scripts/
 
 1. Set up Python using the instructions below.
 2. Copy the starter config for your operating system and fill in the repository, Unity, and Steam values.
-3. Add `BuildScript.cs` to the Unity project and ensure its root contains `version.txt`.
+3. Add `BuildScript.cs` to the Unity project. For file-based versioning, ensure
+   its root contains `version.txt`; tag-based versioning does not require it.
 4. Install SteamCMD and log in once interactively.
 5. Run `unity-build-bot doctor` and fix any reported setup failures.
 6. Run the job once manually; install the scheduler only after it succeeds.
@@ -354,6 +358,7 @@ increments enabled, the build version is `1.0.1.abcdef1`. Configure it under
 
 ```yaml
 versioning:
+  mode: "file"
   auto_increment: true
   bump_part: "patch"
   append_short_commit_hash: true
@@ -363,6 +368,25 @@ versioning:
 Set `append_short_commit_hash` to `false` to keep plain semantic versions.
 The hash suffix is used for the build and recorded state; `version.txt` keeps
 only the incremented base version so the next build can bump it normally.
+
+Set `versioning.mode` to `tag` to fetch tags from `origin` and use the most
+recent tag across the repository, even if it is on another branch:
+
+```yaml
+versioning:
+  mode: "tag"
+  short_commit_hash_length: 7
+```
+
+The build version is always `<tag>-<short commit SHA>`, for example
+`v0.4-pre-demo-348c1f1`. Tags are sorted by Git's creator date: the tagger date
+for annotated tags, or the tagged commit's date for lightweight tags. This
+is not a highest-version or nearest-ancestor lookup.
+Tag mode ignores `version_file`, `auto_increment`, `bump_part`, and
+`append_short_commit_hash`; it neither requires nor modifies a version file.
+Tag fetch failures or a repository without tags stop the run with an error.
+Omitting `mode` preserves the existing `file` behavior. Commit detection is
+unchanged: adding a tag alone does not trigger a build without a new commit.
 
 The state file records the last detected commit SHA, generated build version,
 branch, status, and run time even when a build fails. Failed commits remain
@@ -430,6 +454,20 @@ job:
 
 Leave it as `build_and_upload` for the normal Git sync, Unity build, and Steam
 upload workflow.
+
+### Build without uploading
+
+To sync the configured Git branch and build enabled Unity targets without
+uploading them to Steam, set the job mode in `config.yaml`:
+
+```yaml
+job:
+  mode: "build_only"
+```
+
+This mode still prepares and saves the build version and successful build state.
+As with the normal build-and-upload mode, a successful run skips rebuilding
+when the branch has no new commit. Steam uploads and SteamCMD checks are skipped.
 
 Steam uploads are retried three times after a timeout, connection failure, or
 credential/session failure. Configure the retry count and delay under `job`:

@@ -23,6 +23,7 @@ unity:
       build_name: "Game"
 
 versioning:
+  mode: "file"                        # file | tag
   version_file: "version.txt"
   auto_increment: true
   bump_part: "patch"
@@ -30,7 +31,7 @@ versioning:
   short_commit_hash_length: 7
 
 job:
-  mode: "build_and_upload"
+  mode: "build_and_upload"             # build_and_upload | build_only | upload_only
   steam_upload_retries: 3
   steam_upload_retry_delay_seconds: 30
   prevent_sleep: true                  # block idle sleep/App Nap while the job runs
